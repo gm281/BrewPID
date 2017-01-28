@@ -78,30 +78,62 @@ struct TimeSeriesValue {
 
 // TODO: implement vector
 class Vector {
+private:
+    struct TimeSeriesValue *values;
+    unsigned long firstIdx;
+    unsigned long lastIdx;
+    unsigned long maxSize;
+
 public:
-    void push_back(TimeSeriesValue value) {}
-    void drop_first() {}
-    TimeSeriesValue getLast() { return {0, 0}; }
-    int size() { return 0; }
+    Vector(int maxSize)
+    {
+        this->maxSize = maxSize;
+        firstIdx = 0;
+        lastIdx = 0;
+        values = malloc(sizeof(struct TimeSeriesValue) * maxSize);
+    }
+
+    void push_back(TimeSeriesValue value)
+    {
+        assert(lastIdx < firstIdx + maxSize);
+        values[lastIdx % maxSize] = value;
+        lastIdx++;
+    }
+
+    void drop_first()
+    {
+        assert(lastIdx > firstIdx);
+        firstIdx++;
+    }
+
+    TimeSeriesValue getLast()
+    {
+        assert(lastIdx > firstIdx);
+        return values[(lastIdx-1) % maxSize];
+    }
+
+    int size() {
+        return (int)(lastIdx-firstIdx);
+    }
 };
 
 class TimeSeries {
 private:
-    int max_size;
+    int maxSize;
     Vector history;
 
 public:
-    TimeSeries(int max_size) : history()
+    TimeSeries(int maxSize) : history(maxSize)
     {
-        assert(max_size > 2);
-        this->max_size = max_size;
+        assert(maxSize > 2);
+        this->maxSize = maxSize;
     }
 
     void storeValue(timestamp_t time, temperature_t value)
     {
         TimeSeriesValue lastVal = history.getLast();
         assert(lastVal.time <= time);
-        while(history.size() >= max_size) {
+        while(history.size() >= maxSize) {
             history.drop_first();
         }
         history.push_back({time, value});
