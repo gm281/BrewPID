@@ -6,6 +6,49 @@
 /***********************************************************************************************/
 
 #define BAUD_RATE   (9600UL)
+#define ONE_WIRE_BUS A3
+#define TEMPERATEURE_SAMPLING_PERIOD_MS     1000UL
+
+/***********************************************************************************************/
+/* TYPES */
+/***********************************************************************************************/
+typedef unsigned long timestamp_t;
+typedef unsigned long temperature_t;
+
+class TemperatureSensor
+{
+public:
+    TemperatureSensor() = default;
+    virtual ~TemperatureSensor() = default;
+
+    virtual temperature_t readTemperature() const = 0;
+};
+
+class DallasTemperatureSensor final : TemperatureSensor
+{
+private:
+    // TODO does this free() those on object deallocation?
+    // What's best, storting by pointer?
+    OneWire &oneWire;
+    DallasTemperature &rawSensors;
+
+public:
+    DallasTemperatureSensor(int bus)
+    {
+        oneWire = OneWire(bus);
+        rawSensors = DallasTemperature(&oneWire);
+        rawSensors.begin();
+    }
+
+    temperature_t readTemperature() const override final
+    {
+        // Send the command to get temperatures
+        rawSensors.requestTemperatures();
+        // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
+        return rawSensors.getTempCByIndex(0);
+    }
+};
+
 
 /***********************************************************************************************/
 /* UTILITIES */
@@ -16,7 +59,6 @@
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in: "); Serial.println(__LINE__); }
 
-typedef unsigned long timestamp_t;
 #define NOW     micros()
 #define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
 
@@ -252,14 +294,10 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
-#define ONE_WIRE_BUS A3
-#define TEMPERATEURE_SAMPLING_PERIOD_MS     1000UL
-OneWire *oneWire;
-DallasTemperature *temperatureSensors;
+DallasTemperatureSensor *temperatureSensor;
 void sample_temperature_power_up()
 {
-    oneWire = new OneWire(ONE_WIRE_BUS);
-    temperatureSensors = new DallasTemperature(oneWire);
+    temperatureSensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
 }
 
 void sample_temperature_command_init()
@@ -274,11 +312,8 @@ void sample_temperature_command_init()
 
 void sample_temperature_command_handler(struct command command)
 {
-    // Send the command to get temperatures
-    temperatureSensors->requestTemperatures();
-    // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
     // TODO: save this somewhere
-    temperatureSensors->getTempCByIndex(0);
+    temperatureSensor->readTemperature();
 
     // Schedule next command
     sample_temperature_command_init();
