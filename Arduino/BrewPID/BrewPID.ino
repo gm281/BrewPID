@@ -1,3 +1,6 @@
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
 /***********************************************************************************************/
 /* CONFIG */
 /***********************************************************************************************/
@@ -202,6 +205,7 @@ enum {
     POWER_UP_COMMAND,
     READ_SERIAL_COMMAND,
     RELAY_SWITCH_COMMAND,
+    SAMPLE_TEMPERATURE_COMMAND,
     NR_COMMAND_TYPES
 };
 
@@ -248,6 +252,39 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
+#define ONE_WIRE_BUS A3
+#define TEMPERATEURE_SAMPLING_PERIOD_MS     1000UL
+OneWire *oneWire;
+DallasTemperature *temperatureSensors;
+void sample_temperature_power_up()
+{
+    oneWire = new OneWire(ONE_WIRE_BUS);
+    temperatureSensors = new DallasTemperature(oneWire);
+}
+
+void sample_temperature_command_init()
+{
+    command_t command;
+
+    command.timestamp = NOW + 1000UL * TEMPERATEURE_SAMPLING_PERIOD_MS;
+    command.type = SAMPLE_TEMPERATURE_COMMAND;
+    command.data = 0;
+
+}
+
+void sample_temperature_command_handler(struct command command)
+{
+    // Send the command to get temperatures
+    temperatureSensors->requestTemperatures();
+    // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
+    // TODO: save this somewhere
+    temperatureSensors->getTempCByIndex(0);
+
+    // Schedule next command
+    sample_temperature_command_init();
+}
+
+/* -------- */
 void power_up_command_handler(struct command command)
 {
     int i;
@@ -256,6 +293,8 @@ void power_up_command_handler(struct command command)
         pinMode(relay_pins[i], OUTPUT);
         relay_switch_command_init(i, 0);
     }
+    sample_temperature_power_up();
+    sample_temperature_command_init();
 }
 
 /* -------- */
@@ -369,6 +408,8 @@ void (*command_handlers[NR_COMMAND_TYPES])(struct command command) = {
     /* [POWER_UP_COMMAND] =           */ power_up_command_handler,
     /* [READ_SERIAL_COMMAND] =        */ read_serial_command_handler,
     /* [RELAY_SWITCH_COMMAND] =       */ relay_switch_command_handler,
+    /* [SAMPLE_TEMPERATURE_COMMAND] = */ sample_temperature_command_handler,
+
 };
 
 
