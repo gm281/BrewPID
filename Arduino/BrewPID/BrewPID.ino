@@ -9,7 +9,10 @@
 #define ONE_WIRE_BUS A3
 #define TEMPERATURE_SAMPLING_PERIOD_MS     1000UL
 #define TEMPERATURE_HISTORY_SIZE           100
-
+#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000UL) // 10mins
+#define DEFAULT_TARGET_TEMPERATURE         21.0
+#define HEATER_RELAY_ID                    0
+#define COOLER_RELAY_ID                    1
 /***********************************************************************************************/
 /* BASIC UTILS */
 /***********************************************************************************************/
@@ -18,13 +21,21 @@
 #define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in: "); Serial.println(__LINE__); }
-
+#define NOW     micros()
+#define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
+void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
+{
+    if (delay_us < 16000UL)
+        delayMicroseconds(delay_us);
+    else
+        delay(delay_us / 1000UL);
+}
 
 /***********************************************************************************************/
 /* TYPES */
 /***********************************************************************************************/
 typedef unsigned long timestamp_t;
-typedef unsigned long temperature_t;
+typedef float temperature_t;
 
 class TemperatureSensor
 {
@@ -62,7 +73,7 @@ public:
 
 struct TimeSeriesValue {
     timestamp_t time;
-    unsigned long value;
+    temperature_t value;
 };
 
 class Vector {
@@ -85,7 +96,7 @@ public:
         this->max_size = max_size;
     }
 
-    void storeValue(timestamp_t time, unsigned long value)
+    void storeValue(timestamp_t time, temperature_t value)
     {
         TimeSeriesValue lastVal = history.getLast();
         assert(lastVal.time <= time);
@@ -94,25 +105,89 @@ public:
         }
         history.push_back({time, value});
     }
+
+    // TODO: all 17-ins
+    temperature_t getLatestSmoothed() {
+        return 17.0;
+    }
+
+    float integral(temperature_t expectedValue, timestamp_t period) {
+        return 17.0;
+    }
+
+    float derivative(temperature_t expectedValue, timestamp_t period) {
+        return 17.0;
+    }
+};
+
+class PID {
+private:
+    float kp;
+    float ki;
+    float kd;
+    timestamp_t period;
+    timestamp_t onTimestamp, offTimestamp;
+    long relayId;
+
+public:
+    PID(float kp, float ki, float kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
+    {
+        this->kp = kp;
+        this->ki = ki;
+        this->kd = kd;
+        this->period = period;
+        this->onTimestamp = 0;
+        this->offTimestamp = 0;
+        this->relayId;
+    }
+
+    float output(temperature_t targetTemperature, TimeSeries *timeseries)
+    {
+        float output = kp * (targetTemperature - timeseries->getLatestSmoothed());
+        output += ki * timeseries->integral(targetTemperature, period);
+        output += ki * timeseries->derivative(targetTemperature, period);
+        return output;
+    }
+
+    void schedule(float output, timestamp_t timestamp = NOW)
+    {
+        // Clip to 1.0
+        output = max(output, 0.0);
+        output = min(output, 1.0);
+
+        timestamp_t duration = HEATING_COOLING_ADJUSTMENT_PERIOD_MS;
+        onTimestamp = timestamp;
+        offTimestamp = timestamp + duration;
+    }
+
+    timestamp_t getOnTimestamp() {
+        return onTimestamp;
+    }
+
+    timestamp_t getOffTimestamp() {
+        return offTimestamp;
+    }
+
+    bool shouldBeOn(timestamp_t timestamp = NOW) {
+        assert(onTimestamp < offTimestamp);
+        if (timestamp < onTimestamp) {
+            return false;
+        }
+        if (timestamp < offTimestamp) {
+            return true;
+        }
+        return false;
+    }
+
+    long getRelayId() {
+        return relayId;
+    }
 };
 
 
 /***********************************************************************************************/
 /* UTILITIES */
 /***********************************************************************************************/
-#define NOW     micros()
-#define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
-
-#define ANALOG_TO_MILLIVOLTS(_a)     ((_a) * 5000UL / 1024UL)
-#define ABS(_v)  ((_v) < 0 ? -(_v) : (_v))
-
-void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
-{
-    if (delay_us < 16000UL)
-        delayMicroseconds(delay_us);
-    else
-        delay(delay_us / 1000UL);
-}
 
 struct stat_accumulator {
     long min;
@@ -289,6 +364,8 @@ enum {
     READ_SERIAL_COMMAND,
     RELAY_SWITCH_COMMAND,
     SAMPLE_TEMPERATURE_COMMAND,
+    HEATING_COOLING_COMMAND,
+    TOGLE_HEATING_COOLING_COMMAND,
     NR_COMMAND_TYPES
 };
 
@@ -300,6 +377,14 @@ struct relay_desired_state {
 struct relay_desired_state relays[NR_RELAYS];
 long relay_pins[NR_RELAYS] = {2, 3, 4, 5, 6, 7};
 bool relay_on_high[NR_RELAYS] = {0, 0, 0, 0, 0, 0};
+
+void relay_switch_power_up() {
+    int i;
+    for (i=0; i<NR_RELAYS; i++) {
+        pinMode(relay_pins[i], OUTPUT);
+        relay_switch_command_init(i, 0);
+    }
+}
 
 void relay_switch_command_init(long relay_nr, long switch_on)
 {
@@ -335,13 +420,15 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
-DallasTemperatureSensor *temperatureSensor;
-TimeSeries *temperatureTimeSeries;
+DallasTemperatureSensor *temperature_sensor;
+TimeSeries *temperature_time_series;
 
 void sample_temperature_power_up()
 {
-    temperatureSensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
-    temperatureTimeSeries = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
+    temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
+    // Kick off endless chain of temperature samplings
+    sample_temperature_command_init();
 }
 
 void sample_temperature_command_init()
@@ -352,29 +439,107 @@ void sample_temperature_command_init()
     command.type = SAMPLE_TEMPERATURE_COMMAND;
     command.data = 0;
 
+    push_command(command);
 }
 
 void sample_temperature_command_handler(struct command command)
 {
     timestamp_t time = NOW;
-    temperature_t temperature = temperatureSensor->readTemperature();
-    temperatureTimeSeries->storeValue(time, temperature);
+    temperature_t temperature = temperature_sensor->readTemperature();
+    temperature_time_series->storeValue(time, temperature);
 
     // Schedule next command
     sample_temperature_command_init();
 }
 
 /* -------- */
+void togle_heating_cooling_command_init(void *pidp)
+{
+    command_t command;
+    PID *pid = (PID *)pidp;
+
+    command.timestamp = pid->getOnTimestamp();
+    command.type = TOGLE_HEATING_COOLING_COMMAND;
+    command.data = (unsigned long)pid;
+    push_command(command);
+
+    command.timestamp = pid->getOffTimestamp();
+    command.type = TOGLE_HEATING_COOLING_COMMAND;
+    command.data = (unsigned long)pid;
+    push_command(command);
+}
+
+void togle_heating_cooling_command_handler(struct command command)
+{
+    PID *pid = (PID *)command.data;
+    relay_switch_command_init(pid->getRelayId(), pid->shouldBeOn() ? 1 : 0);
+}
+
+/* -------- */
+temperature_t target_temperature;
+PID *heaterPid;
+PID *coolerPid;
+
+void heating_cooling_power_up()
+{
+    target_temperature = DEFAULT_TARGET_TEMPERATURE;
+    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
+    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
+    // Kick off endless chain of heating/cooling adjustements
+    heating_cooling_command_init();
+}
+
+void heating_cooling_command_init()
+{
+    command_t command;
+
+    command.timestamp = NOW + 1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS;
+    command.type = HEATING_COOLING_COMMAND;
+    command.data = 0;
+
+    push_command(command);
+}
+
+void heating_cooling_command_handler(struct command command)
+{
+    float heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
+    float coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
+
+    PID *outputPid;
+    float output;
+    // Figure out if to heat, cool or do nothing
+    if (heaterOutput > 0.05)
+    {
+        outputPid = heaterPid;
+        output = heaterOutput;
+    } else
+    if (coolerOutput > 0.05)
+    {
+        outputPid = coolerPid;
+        output = coolerOutput;
+    } else
+    {
+        // Do nothing
+    }
+
+    if (outputPid) {
+        outputPid->schedule(output);
+        togle_heating_cooling_command_init(outputPid);
+    }
+
+    // Schedule next command
+    // TODO: how to make sure this can be interrupted by temperature profile change
+    sample_temperature_command_init();
+}
+
+
+/* -------- */
 void power_up_command_handler(struct command command)
 {
-    int i;
     delay(1000);
-    for (i=0; i<NR_RELAYS; i++) {
-        pinMode(relay_pins[i], OUTPUT);
-        relay_switch_command_init(i, 0);
-    }
+    relay_switch_power_up();
     sample_temperature_power_up();
-    sample_temperature_command_init();
+    heating_cooling_power_up();
 }
 
 /* -------- */
@@ -484,12 +649,13 @@ void start_command_handler(struct command command)
 }
 
 void (*command_handlers[NR_COMMAND_TYPES])(struct command command) = {
-    /* [START_COMMAND] =              */ start_command_handler,
-    /* [POWER_UP_COMMAND] =           */ power_up_command_handler,
-    /* [READ_SERIAL_COMMAND] =        */ read_serial_command_handler,
-    /* [RELAY_SWITCH_COMMAND] =       */ relay_switch_command_handler,
-    /* [SAMPLE_TEMPERATURE_COMMAND] = */ sample_temperature_command_handler,
-
+    /* [START_COMMAND] =                 */ start_command_handler,
+    /* [POWER_UP_COMMAND] =              */ power_up_command_handler,
+    /* [READ_SERIAL_COMMAND] =           */ read_serial_command_handler,
+    /* [RELAY_SWITCH_COMMAND] =          */ relay_switch_command_handler,
+    /* [SAMPLE_TEMPERATURE_COMMAND] =    */ sample_temperature_command_handler,
+    /* [HEATING_COOLING_COMMAND] =       */ heating_cooling_command_handler,
+    /* [TOGLE_HEATING_COOLING_COMMAND] = */ togle_heating_cooling_command_handler,
 };
 
 
@@ -534,53 +700,4 @@ void loop() {
         delay_microseconds(wait_time);
     handler(current_command);
 }
-
-
-
-/***********************************************************************************************/
-/* OLD CODE, NO LONGER IN ACTIVE USE */
-/***********************************************************************************************/
-#if 0
-
-//// Testing heap
-void loop() {
-    command_t command;
-    unsigned char i, j;
-
-    Serial.println(commands_used);
-    digitalWrite(led, HIGH);   // turn the LED on (HIGH is the voltage level)
-    delay(1000);               // wait for a second
-    digitalWrite(led, LOW);    // turn the LED off by making the voltage LOW
-    delay(1000);               // wait for a second
-
-    reset_queue();
-
-    for (i=0; i<50; i++) {
-        command.type = i;
-        command.timestamp = random(1000);
-        Serial.print("Adding type, idx: ");
-        Serial.print(command.type);
-        Serial.print(", timestamp: ");
-        Serial.println(command.timestamp);
-        push_command(command);
-    }
-
-    for (i=0; i<commands_used/2; i++) {
-        command = pop_command();
-        Serial.print("Popped type, idx: ");
-        Serial.print(command.type);
-        Serial.print(", timestamp: ");
-        Serial.println(command.timestamp);
-    }
-
-    Serial.println("Done all");
-    delay(10000);
-}
-
-
-#endif
-
-
-
-
 
