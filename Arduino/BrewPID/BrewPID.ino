@@ -484,9 +484,16 @@ PID *coolerPid;
 
 // Allows target temperature change to reset the chain of commands
 timestamp_t next_heating_cooling_reevaluation;
+// Prevents too frequent resets
+unsigned long reset_counter;
 
 void heating_cooling_command_init(unsigned long delay_period)
 {
+    if (reset_counter++ > 5)
+    {
+        return;
+    }
+
     command_t command;
 
     next_heating_cooling_reevaluation = NOW + delay_period;
@@ -504,6 +511,7 @@ void heating_cooling_command_handler(struct command command)
         // Some other command took over
         return;
     }
+    reset_counter = 0;
 
     float heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
     float coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
@@ -531,12 +539,12 @@ void heating_cooling_command_handler(struct command command)
     }
 
     // Schedule next command
-    // TODO: how to make sure this can be interrupted by temperature profile change
-    sample_temperature_command_init();
+    heating_cooling_command_init(1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS);
 }
 
 void heating_cooling_power_up()
 {
+    reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
     heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
     coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
@@ -598,16 +606,14 @@ void process_serial_command(void)
     char *b = read_serial_data.buffer;
 
     switch (*b) {
-        case 'r':
+        case 't':
         {
-            long relay_nr, switch_on;
             char *end;
 
             b++;
             end = read_serial_data.buffer + read_serial_data.buffer_offset;
-            relay_nr = parse_long(b, end, &b);
-            switch_on = parse_long(b, end, &b);
-            relay_switch_command_init(relay_nr, switch_on);
+            target_temperature = parse_long(b, end, &b);
+            heating_cooling_command_init(0);
 
             break;
         }
