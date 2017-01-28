@@ -7,7 +7,18 @@
 
 #define BAUD_RATE   (9600UL)
 #define ONE_WIRE_BUS A3
-#define TEMPERATEURE_SAMPLING_PERIOD_MS     1000UL
+#define TEMPERATURE_SAMPLING_PERIOD_MS     1000UL
+#define TEMPERATURE_HISTORY_SIZE           100
+
+/***********************************************************************************************/
+/* BASIC UTILS */
+/***********************************************************************************************/
+#define CONCAT_TOKENS( TokenA, TokenB )       TokenA ## TokenB
+#define EXPAND_THEN_CONCAT( TokenA, TokenB )  CONCAT_TOKENS( TokenA, TokenB )
+#define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
+#define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
+#define assert(x)                             if (!(x)) { Serial.print("Failure in: "); Serial.println(__LINE__); }
+
 
 /***********************************************************************************************/
 /* TYPES */
@@ -49,16 +60,46 @@ public:
     }
 };
 
+struct TimeSeriesValue {
+    timestamp_t time;
+    unsigned long value;
+};
+
+class Vector {
+public:
+    void push_back(TimeSeriesValue value) {}
+    void drop_first() {}
+    TimeSeriesValue getLast() { return {0, 0}; }
+    int size() { return 0; }
+};
+
+class TimeSeries {
+private:
+    int max_size;
+    Vector history;
+
+public:
+    TimeSeries(int max_size) : history()
+    {
+        assert(max_size > 2);
+        this->max_size = max_size;
+    }
+
+    void storeValue(timestamp_t time, unsigned long value)
+    {
+        TimeSeriesValue lastVal = history.getLast();
+        assert(lastVal.time <= time);
+        while(history.size() >= max_size) {
+            history.drop_first();
+        }
+        history.push_back({time, value});
+    }
+};
+
 
 /***********************************************************************************************/
 /* UTILITIES */
 /***********************************************************************************************/
-#define CONCAT_TOKENS( TokenA, TokenB )       TokenA ## TokenB
-#define EXPAND_THEN_CONCAT( TokenA, TokenB )  CONCAT_TOKENS( TokenA, TokenB )
-#define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
-#define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
-#define assert(x)                             if (!(x)) { Serial.print("Failure in: "); Serial.println(__LINE__); }
-
 #define NOW     micros()
 #define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
 
@@ -295,16 +336,19 @@ void relay_switch_command_handler(struct command command)
 
 /* -------- */
 DallasTemperatureSensor *temperatureSensor;
+TimeSeries *temperatureTimeSeries;
+
 void sample_temperature_power_up()
 {
     temperatureSensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    temperatureTimeSeries = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
 }
 
 void sample_temperature_command_init()
 {
     command_t command;
 
-    command.timestamp = NOW + 1000UL * TEMPERATEURE_SAMPLING_PERIOD_MS;
+    command.timestamp = NOW + 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS;
     command.type = SAMPLE_TEMPERATURE_COMMAND;
     command.data = 0;
 
@@ -312,8 +356,9 @@ void sample_temperature_command_init()
 
 void sample_temperature_command_handler(struct command command)
 {
-    // TODO: save this somewhere
-    temperatureSensor->readTemperature();
+    timestamp_t time = NOW;
+    temperature_t temperature = temperatureSensor->readTemperature();
+    temperatureTimeSeries->storeValue(time, temperature);
 
     // Schedule next command
     sample_temperature_command_init();
