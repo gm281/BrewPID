@@ -423,14 +423,6 @@ void relay_switch_command_handler(struct command command)
 DallasTemperatureSensor *temperature_sensor;
 TimeSeries *temperature_time_series;
 
-void sample_temperature_power_up()
-{
-    temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
-    temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
-    // Kick off endless chain of temperature samplings
-    sample_temperature_command_init();
-}
-
 void sample_temperature_command_init()
 {
     command_t command;
@@ -452,10 +444,20 @@ void sample_temperature_command_handler(struct command command)
     sample_temperature_command_init();
 }
 
+void sample_temperature_power_up()
+{
+    temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
+    // Kick off endless chain of temperature samplings
+    sample_temperature_command_init();
+}
+
 /* -------- */
 void togle_heating_cooling_command_init(void *pidp)
 {
     command_t command;
+    // Work-around for compiler not allowing PID* to be used as argument type
+    // could be related to it disallowing typedefs
     PID *pid = (PID *)pidp;
 
     command.timestamp = pid->getOnTimestamp();
@@ -480,20 +482,15 @@ temperature_t target_temperature;
 PID *heaterPid;
 PID *coolerPid;
 
-void heating_cooling_power_up()
-{
-    target_temperature = DEFAULT_TARGET_TEMPERATURE;
-    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
-    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
-    // Kick off endless chain of heating/cooling adjustements
-    heating_cooling_command_init();
-}
+// Allows target temperature change to reset the chain of commands
+timestamp_t next_heating_cooling_reevaluation;
 
-void heating_cooling_command_init()
+void heating_cooling_command_init(unsigned long delay_period)
 {
     command_t command;
 
-    command.timestamp = NOW + 1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS;
+    next_heating_cooling_reevaluation = NOW + delay_period;
+    command.timestamp = next_heating_cooling_reevaluation;
     command.type = HEATING_COOLING_COMMAND;
     command.data = 0;
 
@@ -502,6 +499,12 @@ void heating_cooling_command_init()
 
 void heating_cooling_command_handler(struct command command)
 {
+    if (NOW < next_heating_cooling_reevaluation)
+    {
+        // Some other command took over
+        return;
+    }
+
     float heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
     float coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
 
@@ -532,6 +535,15 @@ void heating_cooling_command_handler(struct command command)
     sample_temperature_command_init();
 }
 
+void heating_cooling_power_up()
+{
+    target_temperature = DEFAULT_TARGET_TEMPERATURE;
+    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
+    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
+    // Kick off endless chain of heating/cooling adjustements, allowing
+    // for a few temperature samples to be collected first
+    heating_cooling_command_init(10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
+}
 
 /* -------- */
 void power_up_command_handler(struct command command)
