@@ -1,5 +1,3 @@
-#include <dht.h>
-
 /***********************************************************************************************/
 /* CONFIG */
 /***********************************************************************************************/
@@ -204,8 +202,6 @@ enum {
     POWER_UP_COMMAND,
     READ_SERIAL_COMMAND,
     RELAY_SWITCH_COMMAND,
-    SENSORS_SWITCH_COMMAND,
-    READ_SENSOR_COMMAND,
     NR_COMMAND_TYPES
 };
 
@@ -252,87 +248,6 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
-long sensors_switch_pin = 9;
-
-void sensors_switch_command_init(long switch_on)
-{
-    command_t command;
-
-    command.timestamp = NOW;
-    command.type = SENSORS_SWITCH_COMMAND;
-    command.data = switch_on;
-
-    push_command(command);
-}
-
-void sensors_switch_command_handler(struct command command)
-{
-    long want_on;
-
-    want_on = command.data;
-    digitalWrite(sensors_switch_pin, want_on ? HIGH : LOW);
-    /* Delay is required before sensors can be used after power-up */
-    if (want_on) {
-        int i;
-        for (i=0; i<10; i++) {
-            delay(100);
-        }
-    }
-}
-
-
-/* -------- */
-void read_sensor_command_init(long sensor_nr)
-{
-    command_t command;
-
-    command.timestamp = NOW;
-    command.type =  READ_SENSOR_COMMAND;
-    command.data = sensor_nr;
-
-    push_command(command);
-}
-
-#define NR_SENSORS  6
-long sensor_pins[NR_RELAYS] = {16, 14, 15, 18, 19, 20};
-
-dht DHT;
-void read_sensor_command_handler(struct command command)
-{
-    int chk;
-    long sensor_nr, pin_nr;
-
-    sensor_nr = command.data;
-    if (sensor_nr < 0 || sensor_nr >= NR_SENSORS) {
-        return;
-    }
-    pin_nr = sensor_pins[sensor_nr];
-    chk = DHT.read22(pin_nr);
-
-    Serial.print("s,");
-    Serial.print(sensor_nr);
-    Serial.print(",");
-    switch(chk) {
-        case DHTLIB_OK:
-            Serial.print("OK,");
-            Serial.print(DHT.humidity, 1);
-            Serial.print(",");
-            Serial.println(DHT.temperature, 1);
-            break;
-        case DHTLIB_ERROR_CHECKSUM:
-            Serial.println("CHKSUM_ERROR");
-            break;
-        case DHTLIB_ERROR_TIMEOUT:
-            Serial.println("TIMEOUT_ERROR");
-            break;
-        default:
-            Serial.print("UNKNOWN_ERROR,");
-            Serial.println(chk);
-            break;
-    }
-}
-
-/* -------- */
 void power_up_command_handler(struct command command)
 {
     int i;
@@ -340,11 +255,6 @@ void power_up_command_handler(struct command command)
     for (i=0; i<NR_RELAYS; i++) {
         pinMode(relay_pins[i], OUTPUT);
         relay_switch_command_init(i, 0);
-    }
-    pinMode(sensors_switch_pin, OUTPUT);
-    sensors_switch_command_init(1);
-    for (i=0; i<NR_SENSORS; i++) {
-        pinMode(sensor_pins[i], INPUT);
     }
 }
 
@@ -406,32 +316,6 @@ void process_serial_command(void)
             break;
         }
 
-        case 'a':
-        {
-            long want_on;
-            char *end;
-
-            b++;
-            end = read_serial_data.buffer + read_serial_data.buffer_offset;
-            want_on = parse_long(b, end, &b);
-            sensors_switch_command_init(want_on);
-
-            break;
-        }
-
-        case 's':
-        {
-            long sensor_nr;
-            char *end;
-
-            b++;
-            end = read_serial_data.buffer + read_serial_data.buffer_offset;
-            sensor_nr = parse_long(b, end, &b);
-            read_sensor_command_init(sensor_nr);
-
-            break;
-        }
-
         default:
             Serial.print("Unknown command: \"");
             Serial.print(b);
@@ -481,12 +365,10 @@ void start_command_handler(struct command command)
 }
 
 void (*command_handlers[NR_COMMAND_TYPES])(struct command command) = {
-    /* [START_COMMAND] =          */ start_command_handler,
-    /* [POWER_UP_COMMAND] =       */ power_up_command_handler,
-    /* [READ_SERIAL_COMMAND] =    */ read_serial_command_handler,
-    /* [RELAY_SWITCH_COMMAND] =   */ relay_switch_command_handler,
-    /* [SENSORS_SWITCH_COMMAND] = */ sensors_switch_command_handler,
-    /* [READ_SENSOR_COMMAND] =    */ read_sensor_command_handler,
+    /* [START_COMMAND] =              */ start_command_handler,
+    /* [POWER_UP_COMMAND] =           */ power_up_command_handler,
+    /* [READ_SERIAL_COMMAND] =        */ read_serial_command_handler,
+    /* [RELAY_SWITCH_COMMAND] =       */ relay_switch_command_handler,
 };
 
 
