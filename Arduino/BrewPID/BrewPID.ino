@@ -35,7 +35,7 @@ void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
 /* TYPES */
 /***********************************************************************************************/
 typedef unsigned long timestamp_t;
-typedef float temperature_t;
+typedef double temperature_t;
 
 class TemperatureSensor
 {
@@ -76,6 +76,7 @@ struct TimeSeriesValue {
     temperature_t value;
 };
 
+// TODO: implement vector
 class Vector {
 public:
     void push_back(TimeSeriesValue value) {}
@@ -111,26 +112,26 @@ public:
         return 17.0;
     }
 
-    float integral(temperature_t expectedValue, timestamp_t period) {
+    double integral(temperature_t expectedValue, timestamp_t period) {
         return 17.0;
     }
 
-    float derivative(temperature_t expectedValue, timestamp_t period) {
+    double derivative(temperature_t expectedValue, timestamp_t period) {
         return 17.0;
     }
 };
 
 class PID {
 private:
-    float kp;
-    float ki;
-    float kd;
+    double kp;
+    double ki;
+    double kd;
     timestamp_t period;
     timestamp_t onTimestamp, offTimestamp;
     long relayId;
 
 public:
-    PID(float kp, float ki, float kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
+    PID(double kp, double ki, double kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
     {
         this->kp = kp;
         this->ki = ki;
@@ -141,15 +142,15 @@ public:
         this->relayId;
     }
 
-    float output(temperature_t targetTemperature, TimeSeries *timeseries)
+    double output(temperature_t targetTemperature, TimeSeries *timeseries)
     {
-        float output = kp * (targetTemperature - timeseries->getLatestSmoothed());
+        double output = kp * (targetTemperature - timeseries->getLatestSmoothed());
         output += ki * timeseries->integral(targetTemperature, period);
         output += ki * timeseries->derivative(targetTemperature, period);
         return output;
     }
 
-    void schedule(float output, timestamp_t timestamp = NOW)
+    void schedule(double output, timestamp_t timestamp = NOW)
     {
         // Clip to 1.0
         output = max(output, 0.0);
@@ -534,11 +535,11 @@ void heating_cooling_command_handler(struct command command)
     }
     reset_counter = 0;
 
-    float heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
-    float coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
+    double heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
+    double coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
 
     PID *outputPid;
-    float output;
+    double output;
     // Figure out if to heat, cool or do nothing
     if (heaterOutput > 0.05)
     {
