@@ -364,6 +364,7 @@ enum {
     READ_SERIAL_COMMAND,
     RELAY_SWITCH_COMMAND,
     SAMPLE_TEMPERATURE_COMMAND,
+    READ_TEMPERATURE_COMMAND,
     HEATING_COOLING_COMMAND,
     TOGLE_HEATING_COOLING_COMMAND,
     NR_COMMAND_TYPES
@@ -451,6 +452,26 @@ void sample_temperature_power_up()
     // Kick off endless chain of temperature samplings
     sample_temperature_command_init();
 }
+
+/* -------- */
+void read_temperature_command_init()
+{
+    command_t command;
+
+    command.timestamp = NOW;
+    command.type = READ_TEMPERATURE_COMMAND;
+    command.data = 0;
+
+    push_command(command);
+}
+
+void read_temperature_command_handler(struct command command)
+{
+    temperature_t temperature = temperature_time_series->getLatestSmoothed();
+    Serial.print("t,");
+    Serial.println(temperature);
+}
+
 
 /* -------- */
 void togle_heating_cooling_command_init(void *pidp)
@@ -618,6 +639,13 @@ void process_serial_command(void)
             break;
         }
 
+        case 'r':
+        {
+            b++;
+            read_temperature_command_init();
+            break;
+        }
+
         default:
             Serial.print("Unknown command: \"");
             Serial.print(b);
@@ -672,6 +700,7 @@ void (*command_handlers[NR_COMMAND_TYPES])(struct command command) = {
     /* [READ_SERIAL_COMMAND] =           */ read_serial_command_handler,
     /* [RELAY_SWITCH_COMMAND] =          */ relay_switch_command_handler,
     /* [SAMPLE_TEMPERATURE_COMMAND] =    */ sample_temperature_command_handler,
+    /* [READ_TEMPERATURE_COMMAND] =      */ read_temperature_command_handler,
     /* [HEATING_COOLING_COMMAND] =       */ heating_cooling_command_handler,
     /* [TOGLE_HEATING_COOLING_COMMAND] = */ togle_heating_cooling_command_handler,
 };
