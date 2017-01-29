@@ -232,7 +232,7 @@ public:
         // Converting units: degreeC x microS -> decgreeC x S
         relativeIntegral = relativeIntegral / 1000;
         double integral = (double)relativeIntegral / 1000.0;
-        debug("Returnining integral for t: ");
+        debug("Returning integral for t: ");
         debug(expectedValue);
         debug(", t: ");
         debugll(integralDuration);
@@ -260,8 +260,16 @@ private:
             return 0;
         }
         double valueDelta = currentTemperature - lastScheduleTemperature;
-        unsigned long long timeDelta =  (currentTime - lastScheduleTimestamp) / 1000UL;
-        return valueDelta / timeDelta;
+        assert(currentTime > lastScheduleTimestamp);
+        unsigned long long timeDelta =  (currentTime - lastScheduleTimestamp) / 1000000ULL;
+        if (timeDelta == 0)
+        {
+            return 0;
+        }
+        // Unit: degreeC / min
+        double derivative = 60.0 * valueDelta / (double)timeDelta;
+        debug("Returning derivative: ");
+        debugln(derivative);
     }
 
 public:
@@ -286,7 +294,7 @@ public:
         output += ki * timeseries->integral(targetTemperature);
         output += kd * getDerivative(currentTemperature, timestamp);
         lastScheduleTimestamp = timestamp;
-        lastScheduleTemperature = timeseries->getLatestSmoothed();
+        lastScheduleTemperature = currentTemperature;
 
         return output;
     }
