@@ -265,10 +265,10 @@ public:
         this->kp = kp;
         this->ki = ki;
         this->kd = kd;
-        this->period = period;
+        this->period = period * 1000ULL;
         this->onTimestamp = 0;
         this->offTimestamp = 0;
-        this->relayId;
+        this->relayId = relayId;
         this->lastScheduleTimestamp = 0;
         this->lastScheduleTemperature = 0;
     }
@@ -310,7 +310,7 @@ public:
     }
 
     bool shouldBeOn(timestamp_t timestamp = NOW) {
-        assert(onTimestamp < offTimestamp);
+        assert(onTimestamp <= offTimestamp);
         if (timestamp < onTimestamp) {
             return false;
         }
@@ -562,8 +562,7 @@ void relay_switch_command_init(long relay_nr, long switch_on)
 
     debug("Relay #: ");
     debug(relay_nr);
-    debug(", on?: ");
-    debugln(switch_on);
+    debugln((switch_on ? ", on" : ", off"));
     if (relay_nr < 0 || relay_nr >= NR_RELAYS) {
         return;
     }
@@ -740,6 +739,8 @@ void heating_cooling_command_handler(struct command command)
     }
 
     if (outputPid) {
+        // TODO: would be good to un-schedule the other PID
+        //       right now cooling and heating can overlap after change
         outputPid->schedule(ABS(output));
         togle_heating_cooling_command_init(outputPid);
     }
