@@ -23,6 +23,7 @@
 #define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
 #define NOW     micros()
 #define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
+#define ABS(x)  (x<0 ? -x : x)
 void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
 {
     if (delay_us < 16000UL)
@@ -31,7 +32,9 @@ void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
         delay(delay_us / 1000UL);
 }
 #define debug(_p) Serial.print(_p)
+#define debugll(_p) Serial.print(((unsigned long)_p))
 #define debugln(_p) Serial.println(_p)
+#define debugllln(_p) Serial.println(((unsigned long)_p))
 
 int freeRam () 
 {
@@ -85,7 +88,6 @@ struct TimeSeriesValue {
     temperature_t value;
 };
 
-// TODO: implement vector
 class Vector {
 private:
     struct TimeSeriesValue *values;
@@ -125,12 +127,6 @@ public:
         return values[(firstIdx++) % maxSize];
     }
 
-    TimeSeriesValue getFromBeginning(int index)
-    {
-        assert(index < size());
-        return values[(firstIdx+index) % maxSize];
-    }
-
     TimeSeriesValue getFromEnd(int index)
     {
         if (index >= size())
@@ -151,34 +147,35 @@ class TimeSeries {
 private:
     int maxSize;
     Vector history;
-    timestamp_t discardedDuration;
-    timestamp_t lastDiscardedTimestamp;
-    unsigned long long discardedIntegral;
+    timestamp_t integralDuration;
+    timestamp_t lastIntegralTimestamp;
+    long long accumulatedIntegral;
 
-    unsigned long long integralDelta(TimeSeriesValue val, timestamp_t lastTimestamp, temperature_t benchmarkValue) {
-        assert(val.time >= lastTimestamp);
-        // In order not to control precision loss, we:
-        // convert temp to mili-Celcius, store as integer
-        // convert time to ms
-        // the factors of 1k will cancel out when multiplied out
-        unsigned long long mC = 1000UL * (val.value - benchmarkValue);
-        unsigned long long tMS = (val.time - lastDiscardedTimestamp) / 1000UL;
+    long long integralDelta(timestamp_t timestamp, temperature_t value, timestamp_t lastTimestamp) {
+        assert(timestamp >= lastTimestamp);
+        double t = (double)(timestamp - lastIntegralTimestamp);
 
-        return mC * tMS;
+        return (long long)(value * t);
+
     }
 
-    void accountDiscard(TimeSeriesValue val) {
-        debug("Discarding: ");
-        unsigned long tmp = val.time;
-        debug(tmp);
-        debug(", ");
-        debugln(val.value);
-        if (lastDiscardedTimestamp == 0) {
-            lastDiscardedTimestamp = val.time;
+    void accountIntegral(timestamp_t timestamp, temperature_t value) {
+       if (lastIntegralTimestamp == 0) {
+            lastIntegralTimestamp = timestamp;
         }
-        discardedIntegral += integralDelta(val, lastDiscardedTimestamp, 0.0);
-        discardedDuration += val.time - lastDiscardedTimestamp;
-        lastDiscardedTimestamp = val.time;
+        accumulatedIntegral += integralDelta(timestamp, value, lastIntegralTimestamp);
+        integralDuration += timestamp - lastIntegralTimestamp;
+        debug("Integrating: ");
+        debugll(timestamp);
+        debug(", ");
+        debug(value);
+        debug(". Accumulated: t=");
+        debugll(integralDuration);
+        debug(", i=");
+        debugll(accumulatedIntegral);
+        debug(", lt=");
+        debugllln(lastIntegralTimestamp);
+        lastIntegralTimestamp = timestamp;
     }
 
 
@@ -186,18 +183,17 @@ public:
     TimeSeries(int maxSize) : history(maxSize)
     {
         assert(maxSize > 2);
-        assert(maxSize < 200); // Derivative is inefficient, guaratee size is reasonably small
+        assert(maxSize < 200);
         this->maxSize = maxSize;
-        discardedDuration = 0;
-        lastDiscardedTimestamp = 0;
-        discardedIntegral = 0;
+        integralDuration = 0;
+        lastIntegralTimestamp = 0;
+        accumulatedIntegral = 0;
     }
 
     void storeValue(timestamp_t time, temperature_t value)
     {
         debug("Storing: ");
-        unsigned long tmp = time;
-        debug(tmp);
+        debugll(time);
         debug(", ");
         debugln(value);
 
@@ -205,10 +201,10 @@ public:
         {
             assert(history.getLast().time <= time);
         }
+        accountIntegral(time, value);
         while(history.size() >= maxSize)
         {
-            TimeSeriesValue val = history.drop_first();
-            accountDiscard(val);
+            history.drop_first();
         }
         history.push_back({time, value});
     }
@@ -225,19 +221,21 @@ public:
         return accumulator;
     }
 
-    double integral(temperature_t expectedValue, timestamp_t period) {
+    double integral(temperature_t expectedValue) {
         assert(history.size() > 0);
-        unsigned long long relativeIntegral = discardedIntegral - (unsigned long long)expectedValue * discardedDuration;
-        int size = history.size();
-        timestamp_t lastTime = lastDiscardedTimestamp != 0 ? lastDiscardedTimestamp : history.getFromBeginning(0).time;
-        for(int idx=0; idx<size; idx++)
-        {
-            TimeSeriesValue value = history.getFromBeginning(idx);
-            relativeIntegral += integralDelta(value, lastTime, expectedValue);
-            lastTime = value.time;
-        }
+        long long relativeIntegral = accumulatedIntegral - (long long)(expectedValue * (double)integralDuration);
         // Converting units: degreeC x microS -> decgreeC x S
-        return (double)relativeIntegral / 1000000.0;
+        relativeIntegral = relativeIntegral / 1000;
+        double integral = (double)relativeIntegral / 1000.0;
+        debug("Returnining integral for t: ");
+        debug(expectedValue);
+        debug(", t: ");
+        debugll(integralDuration);
+        debug(", i: ");
+        debugll(accumulatedIntegral);
+        debug(" -> ");
+        debugln(integral);
+        return integral;
     }
 };
 
@@ -280,7 +278,7 @@ public:
         timestamp_t timestamp = NOW;
         temperature_t currentTemperature = timeseries->getLatestSmoothed();
         double output = kp * (targetTemperature - currentTemperature);
-        output += ki * timeseries->integral(targetTemperature, period);
+        output += ki * timeseries->integral(targetTemperature);
         output += kd * getDerivative(currentTemperature, timestamp);
         lastScheduleTimestamp = timestamp;
         lastScheduleTemperature = timeseries->getLatestSmoothed();
@@ -294,9 +292,13 @@ public:
         output = max(output, 0.0);
         output = min(output, 1.0);
 
-        timestamp_t duration = HEATING_COOLING_ADJUSTMENT_PERIOD_MS;
+        timestamp_t duration = (timestamp_t)((double)period * output);
         onTimestamp = timestamp;
         offTimestamp = timestamp + duration;
+        debug("Scheduled on: ");
+        debugll(onTimestamp);
+        debug(", off: ");
+        debugllln(offTimestamp);
     }
 
     timestamp_t getOnTimestamp() {
@@ -481,7 +483,7 @@ struct command pop_command() {
         debug("Popping command: ");
         debug(out_command.type);
         debug(", ");
-        debug(((unsigned long)out_command.timestamp));
+        debugll(out_command.timestamp);
         debug(", used: ");
         debug(commands_used);
         debug(", of: ");
@@ -498,7 +500,7 @@ void push_command(struct command command) {
         debug("Pushing command: ");
         debug(command.type);
         debug(", ");
-        debug(((unsigned long)command.timestamp));
+        debugll(command.timestamp);
         debug(", used: ");
         debug(commands_used);
         debug(", of: ");
@@ -558,6 +560,10 @@ void relay_switch_command_init(long relay_nr, long switch_on)
 {
     command_t command;
 
+    debug("Relay #: ");
+    debug(relay_nr);
+    debug(", on?: ");
+    debugln(switch_on);
     if (relay_nr < 0 || relay_nr >= NR_RELAYS) {
         return;
     }
@@ -719,18 +725,22 @@ void heating_cooling_command_handler(struct command command)
     {
         outputPid = heaterPid;
         output = heaterOutput;
+        debug("Scheduling heating, output: ");
+        debugln(output);
     } else
-    if (coolerOutput > 0.05)
+    if (coolerOutput < -0.05)
     {
         outputPid = coolerPid;
         output = coolerOutput;
+        debug("Scheduling cooling, output: ");
+        debugln(output);
     } else
     {
         // Do nothing
     }
 
     if (outputPid) {
-        outputPid->schedule(output);
+        outputPid->schedule(ABS(output));
         togle_heating_cooling_command_init(outputPid);
     }
 
@@ -743,8 +753,8 @@ void heating_cooling_power_up()
     debugln("heating_cooling_power_up");
     reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
-    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
-    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
+    heaterPid = new PID(0.1, 0, 0, HEATER_RELAY_ID);
+    coolerPid = new PID(0.1, 0, 0, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
     heating_cooling_command_init(0, 10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
