@@ -180,14 +180,19 @@ private:
 
 
 public:
+    void resetIntegral()
+    {
+        integralDuration = 0;
+        lastIntegralTimestamp = 0;
+        accumulatedIntegral = 0;
+    }
+
     TimeSeries(int maxSize) : history(maxSize)
     {
         assert(maxSize > 2);
         assert(maxSize < 200);
         this->maxSize = maxSize;
-        integralDuration = 0;
-        lastIntegralTimestamp = 0;
-        accumulatedIntegral = 0;
+        resetIntegral();
     }
 
     void storeValue(timestamp_t time, temperature_t value)
@@ -223,7 +228,7 @@ public:
 
     double integral(temperature_t expectedValue) {
         assert(history.size() > 0);
-        long long relativeIntegral = accumulatedIntegral - (long long)(expectedValue * (double)integralDuration);
+        long long relativeIntegral = (long long)(expectedValue * (double)integralDuration) - accumulatedIntegral;
         // Converting units: degreeC x microS -> decgreeC x S
         relativeIntegral = relativeIntegral / 1000;
         double integral = (double)relativeIntegral / 1000.0;
@@ -684,12 +689,6 @@ unsigned long reset_counter;
 
 void heating_cooling_command_init(int throttled, unsigned long delay_period)
 {
-    if (reset_counter++ > 5)
-    {
-        debugln("> Ignoring attempt to reset heating/cooling loop");
-        return;
-    }
-
     command_t command;
 
     next_heating_cooling_reevaluation = NOW + delay_period;
@@ -761,6 +760,23 @@ void heating_cooling_power_up()
     heating_cooling_command_init(0, 10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
 }
 
+void heating_cooling_set_target_temperature(double/*temperature_t*/ target_t)
+{
+    target_temperature = target_t;
+    debug("Set target temperature to:");
+    debugln(target_t);
+    temperature_time_series->resetIntegral();
+
+    if (reset_counter++ > 5)
+    {
+        debugln("> Ignoring attempt to reset heating/cooling loop");
+        return;
+    }
+    heating_cooling_command_init(1, 0);
+}
+
+
+
 /* -------- */
 void power_up_command_handler(struct command command)
 {
@@ -822,9 +838,7 @@ void process_serial_command(void)
             b++;
             end = read_serial_data.buffer + read_serial_data.buffer_offset;
             target_temperature = parse_long(b, end, &b);
-            debug("Set target temperature to:");
-            debugln(target_temperature);
-            heating_cooling_command_init(1, 0);
+            heating_cooling_set_target_temperature(target_temperature);
 
             break;
         }
