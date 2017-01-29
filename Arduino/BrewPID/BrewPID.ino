@@ -33,6 +33,13 @@ void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
 #define debug(_p) Serial.print(_p)
 #define debugln(_p) Serial.println(_p)
 
+int freeRam () 
+{
+  extern int __heap_start, *__brkval; 
+  int v; 
+  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
+}
+
 /***********************************************************************************************/
 /* TYPES */
 /***********************************************************************************************/
@@ -468,10 +475,37 @@ struct command pop_command() {
     commands_used--;
     heapify_down();
 
+#if 0
+    if (out_command.type != 2 /*READ_SERIAL_COMMAND*/)
+    {
+        debug("Popping command: ");
+        debug(out_command.type);
+        debug(", ");
+        debug(((unsigned long)out_command.timestamp));
+        debug(", used: ");
+        debug(commands_used);
+        debug(", of: ");
+        debugln(COMMANDS_QUEUE_SIZE);
+    }
+#endif
     return out_command;
 }
 
 void push_command(struct command command) {
+#if 0
+    if (command.type != 2 /*READ_SERIAL_COMMAND*/)
+    {
+        debug("Pushing command: ");
+        debug(command.type);
+        debug(", ");
+        debug(((unsigned long)command.timestamp));
+        debug(", used: ");
+        debug(commands_used);
+        debug(", of: ");
+        debugln(COMMANDS_QUEUE_SIZE);
+    }
+#endif
+
     assert(commands_used + 1 < COMMANDS_QUEUE_SIZE);
     memcpy(&commands[commands_used], &command, sizeof(command_t));
     commands_used++;
@@ -643,10 +677,11 @@ timestamp_t next_heating_cooling_reevaluation;
 // Prevents too frequent resets
 unsigned long reset_counter;
 
-void heating_cooling_command_init(unsigned long delay_period)
+void heating_cooling_command_init(int throttled, unsigned long delay_period)
 {
     if (reset_counter++ > 5)
     {
+        debugln("> Ignoring attempt to reset heating/cooling loop");
         return;
     }
 
@@ -655,7 +690,7 @@ void heating_cooling_command_init(unsigned long delay_period)
     next_heating_cooling_reevaluation = NOW + delay_period;
     command.timestamp = next_heating_cooling_reevaluation;
     command.type = HEATING_COOLING_COMMAND;
-    command.data = 0;
+    command.data = throttled;
 
     push_command(command);
 }
@@ -669,7 +704,10 @@ void heating_cooling_command_handler(struct command command)
         return;
     }
     debugln("> Reevaluating heating/cooling");
-    reset_counter = 0;
+    if (!command.data)
+    {
+        reset_counter = 0;
+    }
 
     double heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
     double coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
@@ -697,7 +735,7 @@ void heating_cooling_command_handler(struct command command)
     }
 
     // Schedule next command
-    heating_cooling_command_init(1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS);
+    heating_cooling_command_init(0, 1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS);
 }
 
 void heating_cooling_power_up()
@@ -709,7 +747,7 @@ void heating_cooling_power_up()
     coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
-    heating_cooling_command_init(10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
+    heating_cooling_command_init(0, 10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
 }
 
 /* -------- */
@@ -775,7 +813,7 @@ void process_serial_command(void)
             target_temperature = parse_long(b, end, &b);
             debug("Set target temperature to:");
             debugln(target_temperature);
-            heating_cooling_command_init(0);
+            heating_cooling_command_init(1, 0);
 
             break;
         }
@@ -872,7 +910,9 @@ void loop() {
 
     timestamp_t start_t;
     timestamp_t current_t;
-   /* If there are no commands left, idle. */
+
+    assert(freeRam() > 512);
+    /* If there are no commands left, idle. */
     if (queue_empty()) {
         Serial.println("WARNING: Empty queue");
         delay(1000);
