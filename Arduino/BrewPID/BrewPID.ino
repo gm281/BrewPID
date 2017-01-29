@@ -58,7 +58,7 @@ public:
     virtual temperature_t readTemperature() const = 0;
 };
 
-class DallasTemperatureSensor final : TemperatureSensor
+class DallasTemperatureSensor final : public TemperatureSensor
 {
 private:
     // TODO does this free() those on object deallocation?
@@ -80,6 +80,52 @@ public:
         rawSensors.requestTemperatures();
         // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
         return rawSensors.getTempCByIndex(0);
+    }
+};
+
+bool heatingOn();
+bool coolingOn();
+class TestTemperatureSensor final : public TemperatureSensor
+{
+private:
+    double heatCapacity = 4181 /* water heat capacity J/(kg * degreeC) */ * 20 /* kg */;
+    double coolingPower = 150 /* W */;
+    double heatingPower = 30 /* W */;
+    timestamp_t lastTimestamp = 0;
+    temperature_t currentTemperature = 12;
+
+    void account()
+    {
+        timestamp_t now = NOW;
+        if (lastTimestamp != 0)
+        {
+            double time_s = (double)(now - lastTimestamp);
+            time_s /= 1000.0;
+            double power = heatingOn() ? heatingPower : 0;
+            power -= coolingOn() ? coolingPower : 0;
+            double temperature_delta = power * time_s / (heatCapacity * 1000.0);
+            currentTemperature += temperature_delta;
+            debug("t=");
+            debug(time_s);
+            debug(", p=");
+            debug(power);
+            debug(", delta=");
+            debug(temperature_delta);
+            debug(", temp=");
+            debugln(currentTemperature);
+        }
+        lastTimestamp = now;
+    }
+
+public:
+    TestTemperatureSensor()
+    {
+    }
+
+    temperature_t readTemperature() const override final
+    {
+        account();
+        return currentTemperature;
     }
 };
 
@@ -301,9 +347,10 @@ public:
 
     void schedule(double output, timestamp_t timestamp = NOW)
     {
-        // Clip to 1.0
+        // Clip to 1.05. The 0.05 allows the very quick off-on on period boundries to be removed
+        // TODO: test the off-on theory
         output = max(output, 0.0);
-        output = min(output, 1.0);
+        output = min(output, 1.05);
 
         timestamp_t duration = (timestamp_t)((double)period * output);
         onTimestamp = timestamp;
@@ -606,7 +653,7 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
-DallasTemperatureSensor *temperature_sensor;
+TemperatureSensor *temperature_sensor;
 TimeSeries *temperature_time_series;
 
 void sample_temperature_command_init()
@@ -634,7 +681,8 @@ void sample_temperature_command_handler(struct command command)
 void sample_temperature_power_up()
 {
     debugln("sample_temperature_power_up");
-    temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    //temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    temperature_sensor = new TestTemperatureSensor();
     temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
     // Kick off endless chain of temperature samplings
     sample_temperature_command_init();
@@ -689,6 +737,17 @@ void togle_heating_cooling_command_handler(struct command command)
 temperature_t target_temperature;
 PID *heaterPid;
 PID *coolerPid;
+
+bool heatingOn()
+{
+    return heaterPid->shouldBeOn();
+}
+
+bool coolingOn()
+{
+    return coolerPid->shouldBeOn();
+}
+
 
 // Allows target temperature change to reset the chain of commands
 timestamp_t next_heating_cooling_reevaluation;
@@ -761,8 +820,8 @@ void heating_cooling_power_up()
     debugln("heating_cooling_power_up");
     reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
-    heaterPid = new PID(0.1, 0, 0, HEATER_RELAY_ID);
-    coolerPid = new PID(0.1, 0, 0, COOLER_RELAY_ID);
+    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
+    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
     heating_cooling_command_init(0, 10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
@@ -944,7 +1003,7 @@ void loop() {
     timestamp_t start_t;
     timestamp_t current_t;
 
-    assert(freeRam() > 512);
+    assert(freeRam() > 256);
     /* If there are no commands left, idle. */
     if (queue_empty()) {
         Serial.println("WARNING: Empty queue");
