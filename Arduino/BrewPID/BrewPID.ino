@@ -8,8 +8,8 @@
 #define BAUD_RATE   (9600UL)
 #define ONE_WIRE_BUS A3
 #define TEMPERATURE_SAMPLING_PERIOD_MS     1000UL
-#define TEMPERATURE_HISTORY_SIZE           100
-#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000UL) // 10mins
+#define TEMPERATURE_HISTORY_SIZE           10
+#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (15 * 1000UL) // 10mins
 #define DEFAULT_TARGET_TEMPERATURE         21.0
 #define HEATER_RELAY_ID                    0
 #define COOLER_RELAY_ID                    1
@@ -20,7 +20,7 @@
 #define EXPAND_THEN_CONCAT( TokenA, TokenB )  CONCAT_TOKENS( TokenA, TokenB )
 #define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
-#define assert(x)                             if (!(x)) { Serial.print("Failure in: "); Serial.println(__LINE__); }
+#define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
 #define NOW     micros()
 #define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
 void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
@@ -30,11 +30,13 @@ void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
     else
         delay(delay_us / 1000UL);
 }
+#define debug(_p) Serial.print(_p)
+#define debugln(_p) Serial.println(_p)
 
 /***********************************************************************************************/
 /* TYPES */
 /***********************************************************************************************/
-typedef unsigned long timestamp_t;
+typedef unsigned long long timestamp_t;
 typedef double temperature_t;
 
 class TemperatureSensor
@@ -84,6 +86,11 @@ private:
     unsigned long lastIdx;
     unsigned long maxSize;
 
+// Example, Vector with 1 entry
+// maxSize=2
+// firstIdx=0
+// lastIdx=1
+// size=1
 public:
     Vector(int maxSize)
     {
@@ -93,6 +100,11 @@ public:
         values = malloc(sizeof(struct TimeSeriesValue) * maxSize);
     }
 
+    int size() {
+        return (int)(lastIdx-firstIdx);
+    }
+
+
     void push_back(TimeSeriesValue value)
     {
         assert(lastIdx < firstIdx + maxSize);
@@ -100,20 +112,31 @@ public:
         lastIdx++;
     }
 
-    void drop_first()
+    TimeSeriesValue drop_first()
     {
         assert(lastIdx > firstIdx);
-        firstIdx++;
+        return values[(firstIdx++) % maxSize];
+    }
+
+    TimeSeriesValue getFromBeginning(int index)
+    {
+        assert(index < size());
+        return values[(firstIdx+index) % maxSize];
+    }
+
+    TimeSeriesValue getFromEnd(int index)
+    {
+        if (index >= size())
+        {
+            return values[(lastIdx-1) % maxSize];
+        }
+        return values[(lastIdx-1-index) % maxSize];
     }
 
     TimeSeriesValue getLast()
     {
         assert(lastIdx > firstIdx);
-        return values[(lastIdx-1) % maxSize];
-    }
-
-    int size() {
-        return (int)(lastIdx-firstIdx);
+        return getFromEnd(0);
     }
 };
 
@@ -121,35 +144,93 @@ class TimeSeries {
 private:
     int maxSize;
     Vector history;
+    timestamp_t discardedDuration;
+    timestamp_t lastDiscardedTimestamp;
+    unsigned long long discardedIntegral;
+
+    unsigned long long integralDelta(TimeSeriesValue val, timestamp_t lastTimestamp, temperature_t benchmarkValue) {
+        assert(val.time >= lastTimestamp);
+        // In order not to control precision loss, we:
+        // convert temp to mili-Celcius, store as integer
+        // convert time to ms
+        // the factors of 1k will cancel out when multiplied out
+        unsigned long long mC = 1000UL * (val.value - benchmarkValue);
+        unsigned long long tMS = (val.time - lastDiscardedTimestamp) / 1000UL;
+
+        return mC * tMS;
+    }
+
+    void accountDiscard(TimeSeriesValue val) {
+        debug("Discarding: ");
+        unsigned long tmp = val.time;
+        debug(tmp);
+        debug(", ");
+        debugln(val.value);
+        if (lastDiscardedTimestamp == 0) {
+            lastDiscardedTimestamp = val.time;
+        }
+        discardedIntegral += integralDelta(val, lastDiscardedTimestamp, 0.0);
+        discardedDuration += val.time - lastDiscardedTimestamp;
+        lastDiscardedTimestamp = val.time;
+    }
+
 
 public:
     TimeSeries(int maxSize) : history(maxSize)
     {
         assert(maxSize > 2);
+        assert(maxSize < 200); // Derivative is inefficient, guaratee size is reasonably small
         this->maxSize = maxSize;
+        discardedDuration = 0;
+        lastDiscardedTimestamp = 0;
+        discardedIntegral = 0;
     }
 
     void storeValue(timestamp_t time, temperature_t value)
     {
-        TimeSeriesValue lastVal = history.getLast();
-        assert(lastVal.time <= time);
-        while(history.size() >= maxSize) {
-            history.drop_first();
+        debug("Storing: ");
+        unsigned long tmp = time;
+        debug(tmp);
+        debug(", ");
+        debugln(value);
+
+        if (history.size() > 0)
+        {
+            assert(history.getLast().time <= time);
+        }
+        while(history.size() >= maxSize)
+        {
+            TimeSeriesValue val = history.drop_first();
+            accountDiscard(val);
         }
         history.push_back({time, value});
     }
 
-    // TODO: all 17-ins
     temperature_t getLatestSmoothed() {
-        return 17.0;
+        // This ignores the timestaps, i.e. assumes periodic samples
+        double alpha = 0.8;
+        int i=19;
+        double accumulator = history.getFromEnd(i).value;
+        for (i--; i>=0; i--)
+        {
+            accumulator = accumulator * (1.0 - alpha) + history.getFromEnd(i).value * alpha;
+        }
+        return accumulator;
     }
 
     double integral(temperature_t expectedValue, timestamp_t period) {
-        return 17.0;
-    }
-
-    double derivative(temperature_t expectedValue, timestamp_t period) {
-        return 17.0;
+        assert(history.size() > 0);
+        unsigned long long relativeIntegral = discardedIntegral - (unsigned long long)expectedValue * discardedDuration;
+        int size = history.size();
+        timestamp_t lastTime = lastDiscardedTimestamp != 0 ? lastDiscardedTimestamp : history.getFromBeginning(0).time;
+        for(int idx=0; idx<size; idx++)
+        {
+            TimeSeriesValue value = history.getFromBeginning(idx);
+            relativeIntegral += integralDelta(value, lastTime, expectedValue);
+            lastTime = value.time;
+        }
+        // Converting units: degreeC x microS -> decgreeC x S
+        return (double)relativeIntegral / 1000000.0;
     }
 };
 
@@ -161,6 +242,17 @@ private:
     timestamp_t period;
     timestamp_t onTimestamp, offTimestamp;
     long relayId;
+    timestamp_t lastScheduleTimestamp;
+    temperature_t lastScheduleTemperature;
+
+    double getDerivative(temperature_t currentTemperature, timestamp_t currentTime) {
+        if (lastScheduleTimestamp == 0) {
+            return 0;
+        }
+        double valueDelta = currentTemperature - lastScheduleTemperature;
+        unsigned long long timeDelta =  (currentTime - lastScheduleTimestamp) / 1000UL;
+        return valueDelta / timeDelta;
+    }
 
 public:
     PID(double kp, double ki, double kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
@@ -172,13 +264,20 @@ public:
         this->onTimestamp = 0;
         this->offTimestamp = 0;
         this->relayId;
+        this->lastScheduleTimestamp = 0;
+        this->lastScheduleTemperature = 0;
     }
 
     double output(temperature_t targetTemperature, TimeSeries *timeseries)
     {
-        double output = kp * (targetTemperature - timeseries->getLatestSmoothed());
+        timestamp_t timestamp = NOW;
+        temperature_t currentTemperature = timeseries->getLatestSmoothed();
+        double output = kp * (targetTemperature - currentTemperature);
         output += ki * timeseries->integral(targetTemperature, period);
-        output += ki * timeseries->derivative(targetTemperature, period);
+        output += kd * getDerivative(currentTemperature, timestamp);
+        lastScheduleTimestamp = timestamp;
+        lastScheduleTemperature = timeseries->getLatestSmoothed();
+
         return output;
     }
 
@@ -219,7 +318,7 @@ public:
 
 
 /***********************************************************************************************/
-/* UTILITIES */
+/* STATS */
 /***********************************************************************************************/
 
 struct stat_accumulator {
@@ -413,6 +512,7 @@ long relay_pins[NR_RELAYS] = {2, 3, 4, 5, 6, 7};
 bool relay_on_high[NR_RELAYS] = {0, 0, 0, 0, 0, 0};
 
 void relay_switch_power_up() {
+    debugln("relay_switch_power_up");
     int i;
     for (i=0; i<NR_RELAYS; i++) {
         pinMode(relay_pins[i], OUTPUT);
@@ -471,6 +571,7 @@ void sample_temperature_command_init()
 void sample_temperature_command_handler(struct command command)
 {
     timestamp_t time = NOW;
+    debugln("sample_temperature_command_handler");
     temperature_t temperature = temperature_sensor->readTemperature();
     temperature_time_series->storeValue(time, temperature);
 
@@ -480,6 +581,7 @@ void sample_temperature_command_handler(struct command command)
 
 void sample_temperature_power_up()
 {
+    debugln("sample_temperature_power_up");
     temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
     temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
     // Kick off endless chain of temperature samplings
@@ -563,8 +665,10 @@ void heating_cooling_command_handler(struct command command)
     if (NOW < next_heating_cooling_reevaluation)
     {
         // Some other command took over
+        debugln("> Obsolete reevaluating of heating/cooling");
         return;
     }
+    debugln("> Reevaluating heating/cooling");
     reset_counter = 0;
 
     double heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
@@ -598,6 +702,7 @@ void heating_cooling_command_handler(struct command command)
 
 void heating_cooling_power_up()
 {
+    debugln("heating_cooling_power_up");
     reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
     heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
@@ -610,7 +715,6 @@ void heating_cooling_power_up()
 /* -------- */
 void power_up_command_handler(struct command command)
 {
-    delay(1000);
     relay_switch_power_up();
     sample_temperature_power_up();
     heating_cooling_power_up();
@@ -659,20 +763,24 @@ void process_serial_command(void)
 {
     char *b = read_serial_data.buffer;
 
+    debug("> Processing serial: ");
+    debugln(b);
     switch (*b) {
-        case 't':
+        case 's':
         {
             char *end;
 
             b++;
             end = read_serial_data.buffer + read_serial_data.buffer_offset;
             target_temperature = parse_long(b, end, &b);
+            debug("Set target temperature to:");
+            debugln(target_temperature);
             heating_cooling_command_init(0);
 
             break;
         }
 
-        case 'r':
+        case 't':
         {
             b++;
             read_temperature_command_init();
@@ -719,7 +827,7 @@ void start_command_handler(struct command command)
 
     Serial.println("Start command");
     power_up.type = POWER_UP_COMMAND;
-    power_up.timestamp = NOW;
+    power_up.timestamp = NOW + 3 * 1000UL * 1000UL;
     push_command(power_up);
 
     serial_input.type = READ_SERIAL_COMMAND;
