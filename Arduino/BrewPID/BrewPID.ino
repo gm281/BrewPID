@@ -12,7 +12,7 @@
 #define TEMPERATURE_SAMPLING_PERIOD_MS        ( /* TIME_SPEEDUP_FACTOR  * */ 1000ULL)
 #define TEMPERATURE_HISTORY_SIZE              10
 #define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000ULL)
-#define DEFAULT_TARGET_TEMPERATURE            21.0
+#define DEFAULT_TARGET_TEMPERATURE            14.0
 #define HEATER_RELAY_ID                       0
 #define COOLER_RELAY_ID                       1
 
@@ -414,18 +414,22 @@ public:
 
     void schedule(double output, timestamp_t timestamp = NOW)
     {
-        // Clip to 1.05. The 0.05 allows the very quick off-on on period boundries to be removed
+        // Clip to 1.03. The 0.03 allows the very quick off-on on period boundries to be removed
         // TODO: test the off-on theory
         output = max(output, 0.0);
-        output = min(output, 1.05);
+        output = min(output, 1.03);
 
         timestamp_t duration = (timestamp_t)((double)period * output);
         onTimestamp = timestamp;
         offTimestamp = timestamp + duration;
-        debug("Scheduled on: ");
-        debugll(onTimestamp);
-        debug(", off: ");
-        debugllln(offTimestamp);
+        Serial.print("Scheduled ");
+        Serial.print(relayId);
+        Serial.print(": ");
+        print_large(onTimestamp);
+        Serial.print(", off: ");
+        print_large(offTimestamp);
+        Serial.print(", output: ");
+        Serial.println(output);
     }
 
     timestamp_t getOnTimestamp() {
@@ -848,7 +852,9 @@ void heating_cooling_command_handler(struct command command)
         return;
     }
     debugln("> Reevaluating heating/cooling");
-    Serial.println(temperature_time_series->getLatestSmoothed());
+    Serial.print(temperature_time_series->getLatestSmoothed());
+    Serial.print(", ");
+    Serial.println(target_temperature);
     print_utilisation();
     if (!command.data)
     {
@@ -858,7 +864,7 @@ void heating_cooling_command_handler(struct command command)
     double heaterOutput = heaterPid->output(target_temperature, temperature_time_series);
     double coolerOutput = coolerPid->output(target_temperature, temperature_time_series);
 
-    PID *outputPid;
+    PID *outputPid = NULL;
     double output;
     // Figure out if to heat, cool or do nothing
     if (heaterOutput > 0.05)
@@ -895,7 +901,7 @@ void heating_cooling_power_up()
     debugln("heating_cooling_power_up");
     reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
-    heaterPid = new PID(1, 0, 0, HEATER_RELAY_ID);
+    heaterPid = new PID(1.5, 0, 0, HEATER_RELAY_ID);
     coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
@@ -977,8 +983,8 @@ void process_serial_command(void)
 
             b++;
             end = read_serial_data.buffer + read_serial_data.buffer_offset;
-            target_temperature = parse_long(b, end, &b);
-            heating_cooling_set_target_temperature(target_temperature);
+            double target_temperature = parse_long(b, end, &b);
+            heating_cooling_set_target_temperature(target_temperature / 100);
 
             break;
         }
