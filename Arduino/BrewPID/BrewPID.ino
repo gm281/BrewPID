@@ -5,14 +5,17 @@
 /* CONFIG */
 /***********************************************************************************************/
 
+#define TIME_SPEEDUP_FACTOR                4 // Used for tests: speeds up flow of time by this factor
+
 #define BAUD_RATE   (9600UL)
 #define ONE_WIRE_BUS A3
-#define TEMPERATURE_SAMPLING_PERIOD_MS     1000UL
-#define TEMPERATURE_HISTORY_SIZE           10
-#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (15 * 1000UL) // 10mins
-#define DEFAULT_TARGET_TEMPERATURE         21.0
-#define HEATER_RELAY_ID                    0
-#define COOLER_RELAY_ID                    1
+#define TEMPERATURE_SAMPLING_PERIOD_MS        (TIME_SPEEDUP_FACTOR * 1000ULL)
+#define TEMPERATURE_HISTORY_SIZE              10
+#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (TIME_SPEEDUP_FACTOR * 15 * 1000ULL)
+#define DEFAULT_TARGET_TEMPERATURE            21.0
+#define HEATER_RELAY_ID                       0
+#define COOLER_RELAY_ID                       1
+
 /***********************************************************************************************/
 /* BASIC UTILS */
 /***********************************************************************************************/
@@ -21,10 +24,11 @@
 #define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
-#define NOW     micros()
+#define NOW     (TIME_SPEEDUP_FACTOR * micros())
 #define ABS(x)  (x<0 ? -x : x)
 void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
 {
+    delay_us = delay_us / TIME_SPEEDUP_FACTOR;
     if (delay_us < 16000UL)
     {
         delayMicroseconds(delay_us);
@@ -951,7 +955,6 @@ void process_serial_command(void)
 
 void read_serial_command_handler(struct command command)
 {
-    timestamp_t now = NOW;
     while (Serial.available() > 0) {
         char b;
         int idx;
@@ -969,7 +972,7 @@ void read_serial_command_handler(struct command command)
 
     /* Finally, requeue to check serial line at the appropriate time. */
     command.type = READ_SERIAL_COMMAND;
-    command.timestamp = NOW + 32ULL /* buffer size is 64, 32 should be safe */ * 8ULL /* bits per byte */ * 1000ULL * 1000ULL / BAUD_RATE;
+    command.timestamp = NOW + TIME_SPEEDUP_FACTOR /* Serial line not impacted by artificial time speedup */ * 32ULL /* buffer size is 64, 32 should be safe */ * 8ULL /* bits per byte */ * 1000ULL * 1000ULL / BAUD_RATE;
     push_command(command);
 }
 
