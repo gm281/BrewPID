@@ -24,7 +24,25 @@
 #define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
-#define NOW     (TIME_SPEEDUP_FACTOR * (unsigned long long)micros())
+
+unsigned long long _now()
+{
+    static unsigned long long last_returned = 0;
+    static unsigned long long epoch = 0;
+    unsigned long now = TIME_SPEEDUP_FACTOR * micros();
+    unsigned long long to_return = now + epoch;
+    if (to_return < last_returned)
+    {
+        epoch += 1ULL << 32;
+        to_return = now + epoch;
+        assert(to_return > last_returned);
+    }
+
+    last_returned = to_return;
+    return to_return;
+}
+#define NOW     _now()
+
 #define ABS(x)  (x<0 ? -x : x)
 void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
 {
