@@ -5,7 +5,7 @@
 /* CONFIG */
 /***********************************************************************************************/
 
-#define TIME_SPEEDUP_FACTOR                  100 // Used for tests: speeds up flow of time by this factor
+#define TIME_SPEEDUP_FACTOR                  500 // Used for tests: speeds up flow of time by this factor
 
 #define BAUD_RATE   (9600ULL)
 #define ONE_WIRE_BUS A3
@@ -156,19 +156,38 @@ class TestTemperatureSensor final : public TemperatureSensor
 private:
     double heatCapacity = 4181.0 /* water heat capacity J/(kg * degreeC) */ * 20.0 /* kg */;
     double coolingPower = 150 /* W */;
-    double heatingPower = 30 /* W */;
+    double heatingPower = 80 /* W */;
+    double internalHeatingPower = 20  /* W */;
+
+    timestamp_t internalHeatingPeriod = 40ULL /* h */ * 60 * 60 * 1000 * 1000;
+    timestamp_t internalHeatingDuration = 24ULL /* h */ * 60 * 60 * 1000 * 1000;
+
     timestamp_t lastTimestamp = 0;
     temperature_t currentTemperature = 12;
+    bool isInternalHeatingOn = false;
+
+    void toggleInternalHeating(timestamp_t now)
+    {
+        now = now % internalHeatingPeriod;
+        bool internalOn = now > internalHeatingPeriod - internalHeatingDuration; /* Heat at the end of the period */
+        if (!!isInternalHeatingOn != !!internalOn)
+        {
+            Serial.println((internalOn ? "Switching internal heating on" : "Switching internal heating off"));
+        }
+        isInternalHeatingOn = internalOn;
+    }
 
     void account()
     {
         timestamp_t now = NOW;
+        toggleInternalHeating(now);
         if (lastTimestamp != 0)
         {
             double time_s = (double)(now - lastTimestamp);
             time_s /= 1000000.0;
             double power = heatingOn() ? heatingPower : 0;
             power -= coolingOn() ? coolingPower : 0;
+            power += isInternalHeatingOn ? internalHeatingPower : 0;
             double temperature_delta = power * time_s / heatCapacity;
             currentTemperature += temperature_delta;
             debug("t=");
@@ -261,15 +280,16 @@ class TimeSeries {
 private:
     int maxSize;
     Vector history;
-    timestamp_t integralDuration;
     timestamp_t lastIntegralTimestamp;
+    temperature_t targetTemperature;
     long long accumulatedIntegral;
+    long long maxABSIntegral;
 
     long long integralDelta(timestamp_t timestamp, temperature_t value, timestamp_t lastTimestamp) {
         assert(timestamp >= lastTimestamp);
         double t = (double)(timestamp - lastIntegralTimestamp);
 
-        return (long long)(value * t);
+        return (long long)((targetTemperature - value) * t);
 
     }
 
@@ -278,14 +298,15 @@ private:
             lastIntegralTimestamp = timestamp;
         }
         accumulatedIntegral += integralDelta(timestamp, value, lastIntegralTimestamp);
-        integralDuration += timestamp - lastIntegralTimestamp;
+        // Clip it, as an anti-windup mechanism
+        accumulatedIntegral = max(accumulatedIntegral, -maxABSIntegral);
+        accumulatedIntegral = min(accumulatedIntegral,  maxABSIntegral);
+
         debug("Integrating: ");
         debugll(timestamp);
         debug(", ");
         debug(value);
-        debug(". Accumulated: t=");
-        debugll(integralDuration);
-        debug(", i=");
+        debug(". Accumulated: i=");
         debugll(accumulatedIntegral);
         debug(", lt=");
         debugllln(lastIntegralTimestamp);
@@ -294,19 +315,22 @@ private:
 
 
 public:
-    void resetIntegral()
-    {
-        integralDuration = 0;
-        lastIntegralTimestamp = 0;
-        accumulatedIntegral = 0;
-    }
-
-    TimeSeries(int maxSize) : history(maxSize)
+    TimeSeries(int maxSize, long long maxAbsIntegral, temperature_t targetTemperature) : history(maxSize)
     {
         assert(maxSize > 2);
         assert(maxSize < 200);
         this->maxSize = maxSize;
-        resetIntegral();
+        lastIntegralTimestamp = 0;
+        accumulatedIntegral = 0;
+        this->maxABSIntegral = ABS(maxAbsIntegral);
+        this->targetTemperature = targetTemperature;
+    }
+
+    void setTargetTemperature(temperature_t targetTemperature)
+    {
+        lastIntegralTimestamp = 0;
+        accumulatedIntegral = 0;
+        this->targetTemperature = targetTemperature;
     }
 
     void storeValue(timestamp_t time, temperature_t value)
@@ -340,20 +364,13 @@ public:
         return accumulator;
     }
 
-    double integral(temperature_t expectedValue) {
-        assert(history.size() > 0);
-        long long relativeIntegral = (long long)(expectedValue * (double)integralDuration) - accumulatedIntegral;
+    double integral() {
+        long long relativeIntegral = accumulatedIntegral;
         // Converting units: degreeC x microS -> decgreeC x S
         relativeIntegral = relativeIntegral / 1000;
         double integral = (double)relativeIntegral / 1000.0;
-        debug("Returning integral for t: ");
-        debug(expectedValue);
-        debug(", t: ");
-        debugll(integralDuration);
-        debug(", i: ");
-        debugll(accumulatedIntegral);
-        debug(" -> ");
-        debugln(integral);
+        debug("Returning integral: ");
+        debugllln(accumulatedIntegral);
         return integral;
     }
 };
@@ -406,7 +423,7 @@ public:
         timestamp_t timestamp = NOW;
         temperature_t currentTemperature = timeseries->getLatestSmoothed();
         double output = kp * (targetTemperature - currentTemperature);
-        output += ki * timeseries->integral(targetTemperature);
+        output += ki * timeseries->integral();
         output += kd * getDerivative(currentTemperature, timestamp);
         lastScheduleTimestamp = timestamp;
         lastScheduleTemperature = currentTemperature;
@@ -726,6 +743,7 @@ void relay_switch_command_handler(struct command command)
 }
 
 /* -------- */
+temperature_t target_temperature = DEFAULT_TARGET_TEMPERATURE;
 TemperatureSensor *temperature_sensor;
 TimeSeries *temperature_time_series;
 
@@ -756,7 +774,7 @@ void sample_temperature_power_up()
     debugln("sample_temperature_power_up");
     //temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
     temperature_sensor = new TestTemperatureSensor();
-    temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE);
+    temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE, 1 /* degreeC */ * 5 /* Up to 5x the period will be accounted */ * HEATING_COOLING_ADJUSTMENT_PERIOD_MS * 1000ULL /* us */ , target_temperature);
     // Kick off endless chain of temperature samplings
     sample_temperature_command_init();
 }
@@ -807,7 +825,6 @@ void togle_heating_cooling_command_handler(struct command command)
 }
 
 /* -------- */
-temperature_t target_temperature;
 PID *heaterPid;
 PID *coolerPid;
 
@@ -902,7 +919,6 @@ void heating_cooling_power_up()
 {
     debugln("heating_cooling_power_up");
     reset_counter = 0;
-    target_temperature = DEFAULT_TARGET_TEMPERATURE;
     heaterPid = new PID(1.5, 0.0004, -5, HEATER_RELAY_ID);
     coolerPid = new PID(0.5, 0.00013, -5, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
@@ -915,7 +931,7 @@ void heating_cooling_set_target_temperature(double/*temperature_t*/ target_t)
     target_temperature = target_t;
     debug("Set target temperature to:");
     debugln(target_t);
-    temperature_time_series->resetIntegral();
+    temperature_time_series->setTargetTemperature(target_t);
 
     if (reset_counter++ > 5)
     {
