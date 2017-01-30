@@ -12,7 +12,7 @@
 #define TEMPERATURE_SAMPLING_PERIOD_MS        ( /* TIME_SPEEDUP_FACTOR  * */ 1000ULL)
 #define TEMPERATURE_HISTORY_SIZE              10
 #define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000ULL)
-#define DEFAULT_TARGET_TEMPERATURE            14.0
+#define DEFAULT_TARGET_TEMPERATURE            21.0
 #define HEATER_RELAY_ID                       0
 #define COOLER_RELAY_ID                       1
 
@@ -154,7 +154,7 @@ bool coolingOn();
 class TestTemperatureSensor final : public TemperatureSensor
 {
 private:
-    double heatCapacity = 4181 /* water heat capacity J/(kg * degreeC) */ * 20 /* kg */;
+    double heatCapacity = 4181.0 /* water heat capacity J/(kg * degreeC) */ * 20.0 /* kg */;
     double coolingPower = 150 /* W */;
     double heatingPower = 30 /* W */;
     timestamp_t lastTimestamp = 0;
@@ -166,17 +166,19 @@ private:
         if (lastTimestamp != 0)
         {
             double time_s = (double)(now - lastTimestamp);
-            time_s /= 1000.0;
+            time_s /= 1000000.0;
             double power = heatingOn() ? heatingPower : 0;
             power -= coolingOn() ? coolingPower : 0;
-            double temperature_delta = power * time_s / (heatCapacity * 1000.0);
+            double temperature_delta = power * time_s / heatCapacity;
             currentTemperature += temperature_delta;
             debug("t=");
             debug(time_s);
             debug(", p=");
             debug(power);
+            debug(", c=");
+            debug(heatCapacity);
             debug(", delta=");
-            debug(temperature_delta);
+            debug((1000.0 * temperature_delta));
             debug(", temp=");
             debugln(currentTemperature);
         }
@@ -380,8 +382,8 @@ private:
         }
         // Unit: degreeC / min
         double derivative = 60.0 * valueDelta / (double)timeDelta;
-        debug("Returning derivative: ");
-        debugln(derivative);
+        Serial.print("Returning derivative: ");
+        Serial.println(derivative);
     }
 
 public:
@@ -901,8 +903,8 @@ void heating_cooling_power_up()
     debugln("heating_cooling_power_up");
     reset_counter = 0;
     target_temperature = DEFAULT_TARGET_TEMPERATURE;
-    heaterPid = new PID(1.5, 0, 0, HEATER_RELAY_ID);
-    coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
+    heaterPid = new PID(1.5, 0.0004, -5, HEATER_RELAY_ID);
+    coolerPid = new PID(0.5, 0.00013, -5, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
     heating_cooling_command_init(0, 10 * 1000ULL * TEMPERATURE_SAMPLING_PERIOD_MS);
