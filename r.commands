@@ -1,0 +1,13 @@
+Record trace with:
+screen -L /dev/cu.usbmodem1411 9600
+
+Then postprocess with:
+echo "cnt, temp, target" > /tmp/temp.csv; cat screenlog.0 | grep -v "Idle\|deriv\|Sched\|Unknown\|internal" | cat -n | sed -e "s/\([0-9]\)$(printf '\t')\([0-9]\)/\1, \2/g" >> /tmp/temp.csv
+
+Then open R and use the following:
+(the cnt/6 assumes 10min heating/cooling period, note that just like ylim, xlim is also possible)
+data <- read.table("/tmp/temp.csv", header=T, sep=",")
+attach(data)
+hours <- (cnt/6)
+plot(hours, temp, type="l", ylim=c(20,22))
+lines(hours, target, col=3)
