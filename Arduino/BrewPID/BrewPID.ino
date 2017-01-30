@@ -5,9 +5,9 @@
 /* CONFIG */
 /***********************************************************************************************/
 
-#define TIME_SPEEDUP_FACTOR                4 // Used for tests: speeds up flow of time by this factor
+#define TIME_SPEEDUP_FACTOR                100 // Used for tests: speeds up flow of time by this factor
 
-#define BAUD_RATE   (9600UL)
+#define BAUD_RATE   (9600ULL)
 #define ONE_WIRE_BUS A3
 #define TEMPERATURE_SAMPLING_PERIOD_MS        (TIME_SPEEDUP_FACTOR * 1000ULL)
 #define TEMPERATURE_HISTORY_SIZE              10
@@ -24,25 +24,37 @@
 #define ASSERT( Expression )                  enum{ EXPAND_THEN_CONCAT( ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
-#define NOW     (TIME_SPEEDUP_FACTOR * micros())
+#define NOW     (TIME_SPEEDUP_FACTOR * (unsigned long long)micros())
 #define ABS(x)  (x<0 ? -x : x)
 void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
 {
     delay_us = delay_us / TIME_SPEEDUP_FACTOR;
-    if (delay_us < 16000UL)
+    if (delay_us < 16000ULL)
     {
         delayMicroseconds(delay_us);
     }
     else
     {
-        delay(delay_us / 1000UL);
-        delayMicroseconds(delay_us % 1000UL);
+        delay(delay_us / 1000ULL);
+        delayMicroseconds(delay_us % 1000ULL);
     }
 }
+#define printll(_p, _last_print) \
+do { if (ABS(_p) > 1000000000ULL) \
+{\
+    Serial.print(((unsigned long)(_p / 1000000000ULL))); \
+    _last_print(((unsigned long)(_p % 1000000000ULL))); \
+}\
+else\
+{\
+    _last_print(((unsigned long)_p)); \
+}\
+} while(0)
+
 #define debug(_p) Serial.print(_p)
-#define debugll(_p) Serial.print(((unsigned long)_p))
+#define debugll(_p) printll(_p, Serial.print)
 #define debugln(_p) Serial.println(_p)
-#define debugllln(_p) Serial.println(((unsigned long)_p))
+#define debugllln(_p) printll(_p, Serial.println)
 /*
 #define debug(_p)
 #define debugll(_p)
@@ -63,7 +75,7 @@ void print_utilisation()
     Serial.print("Idle for total: ");
     Serial.print(((unsigned long)total_wait));
     Serial.print(", of: ");
-    Serial.println(NOW);
+    Serial.println(((unsigned long)NOW));
 }
 
 /***********************************************************************************************/
@@ -683,7 +695,7 @@ void sample_temperature_command_init()
 {
     command_t command;
 
-    command.timestamp = NOW + 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS;
+    command.timestamp = NOW + 1000ULL * TEMPERATURE_SAMPLING_PERIOD_MS;
     command.type = SAMPLE_TEMPERATURE_COMMAND;
     command.data = 0;
 
@@ -841,7 +853,7 @@ void heating_cooling_command_handler(struct command command)
     }
 
     // Schedule next command
-    heating_cooling_command_init(0, 1000UL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS);
+    heating_cooling_command_init(0, 1000ULL * HEATING_COOLING_ADJUSTMENT_PERIOD_MS);
 }
 
 void heating_cooling_power_up()
@@ -853,7 +865,7 @@ void heating_cooling_power_up()
     coolerPid = new PID(1, 0, 0, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
-    heating_cooling_command_init(0, 10 * 1000UL * TEMPERATURE_SAMPLING_PERIOD_MS);
+    heating_cooling_command_init(0, 10 * 1000ULL * TEMPERATURE_SAMPLING_PERIOD_MS);
 }
 
 void heating_cooling_set_target_temperature(double/*temperature_t*/ target_t)
@@ -983,7 +995,7 @@ void start_command_handler(struct command command)
 
     Serial.println("Start command");
     power_up.type = POWER_UP_COMMAND;
-    power_up.timestamp = NOW + 3 * 1000UL * 1000UL;
+    power_up.timestamp = NOW + 3 * 1000ULL * 1000ULL;
     push_command(power_up);
 
     serial_input.type = READ_SERIAL_COMMAND;
