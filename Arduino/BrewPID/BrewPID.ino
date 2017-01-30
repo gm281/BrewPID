@@ -22,25 +22,44 @@
 #define ASSERTM( Expression, Message )        enum{ EXPAND_THEN_CONCAT( Message ## _ASSERT_line_, __LINE__ ) = 1 / !!( Expression ) }
 #define assert(x)                             if (!(x)) { Serial.print("Failure in line: "); Serial.print(__LINE__); Serial.print(", failing condition: "); Serial.println(#x);}
 #define NOW     micros()
-#define VALID_DELAY(_d) ((_d) > 0 && (_d) < ((-1UL) >> 2))
 #define ABS(x)  (x<0 ? -x : x)
-void delay_microseconds(unsigned long /* timestamp_t */ delay_us)
+void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
 {
     if (delay_us < 16000UL)
+    {
         delayMicroseconds(delay_us);
+    }
     else
+    {
         delay(delay_us / 1000UL);
+        delayMicroseconds(delay_us % 1000UL);
+    }
 }
 #define debug(_p) Serial.print(_p)
 #define debugll(_p) Serial.print(((unsigned long)_p))
 #define debugln(_p) Serial.println(_p)
 #define debugllln(_p) Serial.println(((unsigned long)_p))
+/*
+#define debug(_p)
+#define debugll(_p)
+#define debugln(_p)
+#define debugllln(_p)
+*/
 
 int freeRam () 
 {
   extern int __heap_start, *__brkval; 
   int v; 
   return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
+}
+
+unsigned long long/* timestamp_t */ total_wait = 0;
+void print_utilisation()
+{
+    Serial.print("Idle for total: ");
+    Serial.print(((unsigned long)total_wait));
+    Serial.print(", of: ");
+    Serial.println(NOW);
 }
 
 /***********************************************************************************************/
@@ -759,6 +778,8 @@ void heating_cooling_command_init(int throttled, unsigned long delay_period)
     command_t command;
 
     next_heating_cooling_reevaluation = NOW + delay_period;
+    debug("> Heating cooling command for: ");
+    debugllln(next_heating_cooling_reevaluation);
     command.timestamp = next_heating_cooling_reevaluation;
     command.type = HEATING_COOLING_COMMAND;
     command.data = throttled;
@@ -768,10 +789,14 @@ void heating_cooling_command_init(int throttled, unsigned long delay_period)
 
 void heating_cooling_command_handler(struct command command)
 {
-    if (NOW < next_heating_cooling_reevaluation)
+    timestamp_t now = NOW;
+    if (now < next_heating_cooling_reevaluation)
     {
         // Some other command took over
-        debugln("> Obsolete reevaluating of heating/cooling");
+        debug("> Obsolete reevaluating of heating/cooling");
+        debugll(next_heating_cooling_reevaluation);
+        debug(", ");
+        debugllln(now);
         return;
     }
     debugln("> Reevaluating heating/cooling");
@@ -841,8 +866,6 @@ void heating_cooling_set_target_temperature(double/*temperature_t*/ target_t)
     }
     heating_cooling_command_init(1, 0);
 }
-
-
 
 /* -------- */
 void power_up_command_handler(struct command command)
@@ -946,7 +969,7 @@ void read_serial_command_handler(struct command command)
 
     /* Finally, requeue to check serial line at the appropriate time. */
     command.type = READ_SERIAL_COMMAND;
-    command.timestamp = NOW + 1000UL * 1000UL / BAUD_RATE;
+    command.timestamp = NOW + 32ULL /* buffer size is 64, 32 should be safe */ * 8ULL /* bits per byte */ * 1000ULL * 1000ULL / BAUD_RATE;
     push_command(command);
 }
 
@@ -999,9 +1022,7 @@ void loop() {
     command_t current_command;
     command_handler_t handler;
     timestamp_t wait_time;
-
-    timestamp_t start_t;
-    timestamp_t current_t;
+    timestamp_t now;
 
     assert(freeRam() > 256);
     /* If there are no commands left, idle. */
@@ -1014,10 +1035,14 @@ void loop() {
     /* Normal case: there is at least one command, pop it off the queue and exec. */
     current_command = pop_command();
     handler = command_handlers[current_command.type];
-    wait_time = current_command.timestamp - NOW;
-
-    if (VALID_DELAY(wait_time))
+    now = NOW;
+    if (current_command.timestamp > now)
+    {
+        wait_time = current_command.timestamp - now;
+        total_wait += wait_time;
         delay_microseconds(wait_time);
+        assert(NOW > current_command.timestamp);
+    }
     handler(current_command);
 }
 
