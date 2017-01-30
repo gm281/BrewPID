@@ -57,11 +57,22 @@ void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
         delayMicroseconds(delay_us % 1000ULL);
     }
 }
+
+// Rather inefficient, but simple implementation of printing numbers > ~1<<32
 #define printll(_p, _last_print) \
 do { if (ABS(_p) > 1000000000ULL) \
 {\
-    Serial.print(((unsigned long)(_p / 1000000000ULL))); \
-    _last_print(((unsigned long)(_p % 1000000000ULL))); \
+    unsigned long long p_val = _p; \
+    unsigned long long tmp = 1000000000ULL; \
+    while(p_val > tmp) tmp *= 10; \
+    tmp /= 10; \
+    while(tmp != 0) { \
+        unsigned long long digit = p_val / tmp; \
+        Serial.print(((unsigned int)digit)); \
+        p_val = p_val % tmp; \
+        tmp /= 10; \
+    } \
+    _last_print(""); \
 }\
 else\
 {\
