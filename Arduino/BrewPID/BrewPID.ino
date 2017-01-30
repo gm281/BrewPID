@@ -5,13 +5,13 @@
 /* CONFIG */
 /***********************************************************************************************/
 
-#define TIME_SPEEDUP_FACTOR                100 // Used for tests: speeds up flow of time by this factor
+#define TIME_SPEEDUP_FACTOR                  100 // Used for tests: speeds up flow of time by this factor
 
 #define BAUD_RATE   (9600ULL)
 #define ONE_WIRE_BUS A3
-#define TEMPERATURE_SAMPLING_PERIOD_MS        (TIME_SPEEDUP_FACTOR * 1000ULL)
+#define TEMPERATURE_SAMPLING_PERIOD_MS        ( /* TIME_SPEEDUP_FACTOR  * */ 1000ULL)
 #define TEMPERATURE_HISTORY_SIZE              10
-#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (TIME_SPEEDUP_FACTOR * 15 * 1000ULL)
+#define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000ULL)
 #define DEFAULT_TARGET_TEMPERATURE            21.0
 #define HEATER_RELAY_ID                       0
 #define COOLER_RELAY_ID                       1
@@ -59,37 +59,38 @@ void delay_microseconds(unsigned long long/* timestamp_t */ delay_us)
 }
 
 // Rather inefficient, but simple implementation of printing numbers > ~1<<32
-#define printll(_p, _last_print) \
-do { if (ABS(_p) > 1000000000ULL) \
-{\
-    unsigned long long p_val = _p; \
-    unsigned long long tmp = 1000000000ULL; \
-    while(p_val > tmp) tmp *= 10; \
-    tmp /= 10; \
-    while(tmp != 0) { \
-        unsigned long long digit = p_val / tmp; \
-        Serial.print(((unsigned int)digit)); \
-        p_val = p_val % tmp; \
-        tmp /= 10; \
-    } \
-    _last_print(""); \
-}\
-else\
-{\
-    _last_print(((unsigned long)_p)); \
-}\
-} while(0)
+void print_large(unsigned long long p)
+{
+    if (p > 1000000000ULL)
+    {
+        unsigned long long tmp = 1000000000ULL;
+        while(p > tmp) tmp *= 10;
+        tmp /= 10;
+        while(tmp != 0) {
+            unsigned long long digit = p / tmp;
+            Serial.print(((unsigned int)digit));
+            p = p % tmp;
+            tmp /= 10;
+        }
+    }
+    else
+    {
+        Serial.print(((unsigned long)p));
+    }
+}
 
+#define printll(_p, _last_print) do {print_large(_p); _last_print(""); } while(0)
+
+/*
 #define debug(_p) Serial.print(_p)
 #define debugll(_p) printll(_p, Serial.print)
 #define debugln(_p) Serial.println(_p)
 #define debugllln(_p) printll(_p, Serial.println)
-/*
+*/
 #define debug(_p)
 #define debugll(_p)
 #define debugln(_p)
 #define debugllln(_p)
-*/
 
 int freeRam () 
 {
@@ -102,9 +103,10 @@ unsigned long long/* timestamp_t */ total_wait = 0;
 void print_utilisation()
 {
     Serial.print("Idle for total: ");
-    Serial.print(((unsigned long)total_wait));
-    Serial.print(", of: ");
-    Serial.println(((unsigned long)NOW));
+    print_large(total_wait);
+    Serial.print(" / ");
+    print_large(NOW);
+    Serial.println("");
 }
 
 /***********************************************************************************************/
@@ -383,6 +385,7 @@ private:
     }
 
 public:
+
     PID(double kp, double ki, double kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
     {
         this->kp = kp;
@@ -845,6 +848,8 @@ void heating_cooling_command_handler(struct command command)
         return;
     }
     debugln("> Reevaluating heating/cooling");
+    Serial.println(temperature_time_series->getLatestSmoothed());
+    print_utilisation();
     if (!command.data)
     {
         reset_counter = 0;
