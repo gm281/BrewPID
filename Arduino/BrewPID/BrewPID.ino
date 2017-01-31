@@ -115,107 +115,6 @@ void print_utilisation()
 typedef unsigned long long timestamp_t;
 typedef double temperature_t;
 
-class TemperatureSensor
-{
-public:
-    TemperatureSensor() = default;
-    virtual ~TemperatureSensor() = default;
-
-    virtual temperature_t readTemperature() const = 0;
-};
-
-class DallasTemperatureSensor final : public TemperatureSensor
-{
-private:
-    // TODO does this free() those on object deallocation?
-    // What's best, storting by pointer?
-    OneWire &oneWire;
-    DallasTemperature &rawSensors;
-
-public:
-    DallasTemperatureSensor(int bus)
-    {
-        oneWire = OneWire(bus);
-        rawSensors = DallasTemperature(&oneWire);
-        rawSensors.begin();
-    }
-
-    temperature_t readTemperature() const override final
-    {
-        // Send the command to get temperatures
-        rawSensors.requestTemperatures();
-        // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
-        return rawSensors.getTempCByIndex(0);
-    }
-};
-
-bool heatingOn();
-bool coolingOn();
-class TestTemperatureSensor final : public TemperatureSensor
-{
-private:
-    double heatCapacity = 4181.0 /* water heat capacity J/(kg * degreeC) */ * 20.0 /* kg */;
-    double coolingPower = 150 /* W */;
-    double heatingPower = 80 /* W */;
-    double internalHeatingPower = 20  /* W */;
-
-    timestamp_t internalHeatingPeriod = 40ULL /* h */ * 60 * 60 * 1000 * 1000;
-    timestamp_t internalHeatingDuration = 24ULL /* h */ * 60 * 60 * 1000 * 1000;
-
-    timestamp_t lastTimestamp = 0;
-    temperature_t currentTemperature = 12;
-    bool isInternalHeatingOn = false;
-
-    void toggleInternalHeating(timestamp_t now)
-    {
-        now = now % internalHeatingPeriod;
-        bool internalOn = now > internalHeatingPeriod - internalHeatingDuration; /* Heat at the end of the period */
-        if (!!isInternalHeatingOn != !!internalOn)
-        {
-            Serial.println((internalOn ? "Switching internal heating on" : "Switching internal heating off"));
-        }
-        isInternalHeatingOn = internalOn;
-    }
-
-    void account()
-    {
-        timestamp_t now = NOW;
-        toggleInternalHeating(now);
-        if (lastTimestamp != 0)
-        {
-            double time_s = (double)(now - lastTimestamp);
-            time_s /= 1000000.0;
-            double power = heatingOn() ? heatingPower : 0;
-            power -= coolingOn() ? coolingPower : 0;
-            power += isInternalHeatingOn ? internalHeatingPower : 0;
-            double temperature_delta = power * time_s / heatCapacity;
-            currentTemperature += temperature_delta;
-            debug("t=");
-            debug(time_s);
-            debug(", p=");
-            debug(power);
-            debug(", c=");
-            debug(heatCapacity);
-            debug(", delta=");
-            debug((1000.0 * temperature_delta));
-            debug(", temp=");
-            debugln(currentTemperature);
-        }
-        lastTimestamp = now;
-    }
-
-public:
-    TestTemperatureSensor()
-    {
-    }
-
-    temperature_t readTemperature() const override final
-    {
-        account();
-        return currentTemperature;
-    }
-};
-
 struct TimeSeriesValue {
     timestamp_t time;
     temperature_t value;
@@ -260,6 +159,18 @@ public:
         return values[(firstIdx++) % maxSize];
     }
 
+    TimeSeriesValue get_first()
+    {
+        assert(lastIdx > firstIdx);
+        return values[firstIdx % maxSize];
+    }
+
+    void replace_last(TimeSeriesValue new_value)
+    {
+        assert(lastIdx > firstIdx);
+        values[(lastIdx-1) % maxSize] = new_value;
+    }
+
     TimeSeriesValue getFromEnd(int index)
     {
         if (index >= size())
@@ -273,6 +184,141 @@ public:
     {
         assert(lastIdx > firstIdx);
         return getFromEnd(0);
+    }
+};
+
+class TemperatureSensor
+{
+public:
+    TemperatureSensor() = default;
+    virtual ~TemperatureSensor() = default;
+
+    virtual temperature_t readTemperature() const = 0;
+};
+
+class DallasTemperatureSensor final : public TemperatureSensor
+{
+private:
+    // TODO does this free() those on object deallocation?
+    // What's best, storting by pointer?
+    OneWire &oneWire;
+    DallasTemperature &rawSensors;
+
+public:
+    DallasTemperatureSensor(int bus)
+    {
+        oneWire = OneWire(bus);
+        rawSensors = DallasTemperature(&oneWire);
+        rawSensors.begin();
+    }
+
+    temperature_t readTemperature() const override final
+    {
+        // Send the command to get temperatures
+        rawSensors.requestTemperatures();
+        // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
+        return rawSensors.getTempCByIndex(0);
+    }
+};
+
+bool heatingOn();
+bool coolingOn();
+class TestTemperatureSensor final : public TemperatureSensor
+{
+private:
+    const temperature_t initialTemperature = 12;
+
+    /* Basic thermodynamic model */
+    const double heatCapacity = 4181.0 /* water heat capacity J/(kg * degreeC) */ * 20.0 /* kg */;
+    const double coolingPower = 70 /* W */;
+    const double heatingPower = 30 /* W */;
+
+    /* Internal power generated (yeast) */
+    const double internalHeatingPower = 60  /* W */;
+    const timestamp_t internalHeatingPeriod = 40ULL /* h */ * 60 * 60 * 1000 * 1000;
+    const timestamp_t internalHeatingDuration = 24ULL /* h */ * 60 * 60 * 1000 * 1000;
+
+    /* Heat transfer inertia */
+    const timestamp_t delayUnit = /* 1min */ 60ULL * 1000 * 1000;
+    const unsigned int numDelayUnits = 5;
+
+    /* Modeling vars. */
+    timestamp_t lastTimestamp = 0;
+    bool isInternalHeatingOn = false;
+    Vector delayVector;
+
+    void toggleInternalHeating(timestamp_t now)
+    {
+        now = now % internalHeatingPeriod;
+        bool internalOn = now > internalHeatingPeriod - internalHeatingDuration; /* Heat at the end of the period */
+        if (!!isInternalHeatingOn != !!internalOn)
+        {
+            Serial.println((internalOn ? "Switching internal heating on" : "Switching internal heating off"));
+        }
+        isInternalHeatingOn = internalOn;
+    }
+
+    void processDelayVector(timestamp_t now)
+    {
+        TimeSeriesValue lastVal = delayVector.getLast();
+        if (lastVal.time + delayUnit < now)
+        {
+            TimeSeriesValue newVal;
+            debug("Adding new delay value, last val: ");
+            debugln(lastVal.value);
+            newVal.time = now;
+            newVal.value = lastVal.value;
+            if (delayVector.size() == numDelayUnits)
+            {
+                delayVector.drop_first();
+            }
+            delayVector.push_back(newVal);
+        }
+    }
+
+    void account()
+    {
+        timestamp_t now = NOW;
+        processDelayVector(now);
+        toggleInternalHeating(now);
+        if (lastTimestamp != 0)
+        {
+            TimeSeriesValue vectorValue = delayVector.getLast();
+            double time_s = (double)(now - lastTimestamp);
+            time_s /= 1000000.0;
+            double power = heatingOn() ? heatingPower : 0;
+            power -= coolingOn() ? coolingPower : 0;
+            power += isInternalHeatingOn ? internalHeatingPower : 0;
+            double temperature_delta = power * time_s / heatCapacity;
+            vectorValue.value += temperature_delta;
+            delayVector.replace_last(vectorValue);
+            debug("t=");
+            debug(time_s);
+            debug(", p=");
+            debug(power);
+            debug(", c=");
+            debug(heatCapacity);
+            debug(", delta=");
+            debug((1000.0 * temperature_delta));
+            debug(", temp=");
+            debugln(vectorValue.value);
+        }
+        lastTimestamp = now;
+    }
+
+public:
+    TestTemperatureSensor() : delayVector(numDelayUnits)
+    {
+        TimeSeriesValue value;
+        value.time = NOW;
+        value.value = initialTemperature;
+        delayVector.push_back(value);
+    }
+
+    temperature_t readTemperature() const override final
+    {
+        account();
+        return delayVector.get_first().value;
     }
 };
 
@@ -391,7 +437,7 @@ private:
             return 0;
         }
         double valueDelta = currentTemperature - lastScheduleTemperature;
-        assert(currentTime > lastScheduleTimestamp);
+        assert(currentTime >= lastScheduleTimestamp);
         unsigned long long timeDelta =  (currentTime - lastScheduleTimestamp) / 1000000ULL;
         if (timeDelta == 0)
         {
