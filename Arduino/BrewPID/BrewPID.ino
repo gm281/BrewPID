@@ -825,8 +825,8 @@ void togle_heating_cooling_command_handler(struct command command)
 }
 
 /* -------- */
-PID *heaterPid;
-PID *coolerPid;
+PID *heaterPid = new PID(1.5, 0.0004, -5, HEATER_RELAY_ID);
+PID *coolerPid = new PID(1.0, 0.0003, -5, COOLER_RELAY_ID);
 
 bool heatingOn()
 {
@@ -919,8 +919,6 @@ void heating_cooling_power_up()
 {
     debugln("heating_cooling_power_up");
     reset_counter = 0;
-    heaterPid = new PID(1.5, 0.0004, -5, HEATER_RELAY_ID);
-    coolerPid = new PID(0.5, 0.00013, -5, COOLER_RELAY_ID);
     // Kick off endless chain of heating/cooling adjustements, allowing
     // for a few temperature samples to be collected first
     heating_cooling_command_init(0, 10 * 1000ULL * TEMPERATURE_SAMPLING_PERIOD_MS);
