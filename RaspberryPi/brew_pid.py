@@ -6,12 +6,16 @@ import os
 import errno
 import sys
 import socket
+from bottle import run, post, request, response, get, route, static_file
+import json
 
 SERVER_PORT=12400
 DEVICE = '/dev/cu.usbmodem1411' # the arduino serial interface (use dmesg when connecting)
 BAUD = 9600
 NR_SENSORS = 6
 LOG_DIRECTORY = os.getenv("HOME") + '/TemperatureLogs/'
+SCRIPT_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
+
 
 # In order to use debug mode, set the below variable to True, then in the shell:
 # mkfifo /tmp/cmd_fifo
@@ -58,6 +62,7 @@ class Loggable:
         self.name = name
         self.current_hour = []
         self.complete_hours = []
+        self.consumed_hours = []
         self.last_reading = None
         self.lock = threading.Lock()
 
@@ -73,9 +78,24 @@ class Loggable:
         self.lock.acquire()
         self.locked_flush_hour(date)
         complete_hours = self.complete_hours
+        self.consumed_hours.extend(complete_hours)
         self.complete_hours = []
         self.lock.release()
         return complete_hours
+
+    def toJSONRepresentable(self):
+        out = []
+        self.lock.acquire()
+        for hour in self.consumed_hours:
+            for i in hour:
+                out.append(i.toJSONRepresentable())
+        for hour in self.complete_hours:
+            for i in hour:
+                out.append(i.toJSONRepresentable())
+        for i in self.current_hour:
+            out.append(i.toJSONRepresentable())
+        self.lock.release()
+        return out
 
 
 class TemperatureReading:
@@ -86,6 +106,9 @@ class TemperatureReading:
 
     def __repr__(self):
         return "{}, {}, {}".format(self.date, self.temperature, self.target_temperature)
+
+    def toJSONRepresentable(self):
+        return { "date": self.date.isoformat(), "temp": self.temperature, "target_temp": self.target_temperature }
 
 class TemperatureSensor(Loggable):
     def __init__(self):
@@ -109,6 +132,9 @@ class HeaterCoolerSwitch:
 
     def __repr__(self):
         return "{}, {}".format(self.date, self.on)
+
+    def toJSONRepresentable(self):
+        return { "date": self.date.isoformat(), "on": self.on }
 
 class PID(Loggable):
     def __init__(self, heater):
@@ -159,9 +185,9 @@ class ReadingThread(StoppableThread):
             elif line.startswith("r,"):
                 tokens = line.split(',')
                 if tokens[1] == "h":
-                    heater_pid.process_reading(tokens[2])
+                    heater_pid.process_reading(bool(tokens[2]))
                 elif tokens[1] == "c":
-                    cooler_pid.process_reading(tokens[2])
+                    cooler_pid.process_reading(bool(tokens[2]))
                 else:
                     print("Unknown relay type: {0}".format(tokens[1]))
             else:
@@ -198,76 +224,10 @@ class WriteoutThread(StoppableThread):
         date = datetime.datetime.now()
         loggables = [temperature_sensor, heater_pid, cooler_pid]
         for loggable in loggables:
-            print(loggable)
             complete_hours = loggable.consume_complete_hours(date)
             for complete_hour in complete_hours:
                 name = loggable.get_name()
                 self.writeout_hour(name, complete_hour)
-
-
-class ServerThread(StoppableThread):
-    def __init__(self):
-        super(ServerThread, self).__init__()
-        self.socket = socket.socket()
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.bind(('', SERVER_PORT))
-        self.partial_message = ''
-        self.client = None
-
-    def process_message(self, message):
-        message = message.lstrip('\n')
-        if message.startswith('sensor'):
-            place_name = message[7:]
-            print("Requested sensor reading for: {}".format(place_name))
-            if place_names_to_place.has_key(place_name):
-                place = place_names_to_place[place_name]
-                if hasattr(place, "sensor"):
-                    sensor_last_reading = place.sensor.get_last_reading()
-                    if sensor_last_reading == None:
-                        self.client.send("error,no_sensor_readings,{}$".format(place_name))
-                    else:
-                        self.client.send("sensor_reading,{},{},{},{}$".format(place_name, sensor_last_reading.date, sensor_last_reading.humidity, sensor_last_reading.temperature))
-            return True
-        elif message.startswith('relay'):
-            payload = message[6:]
-            print("Requested relay switch for: {}".format(payload))
-            tokens = payload.split(',')
-            place_name = tokens[0]
-            want_on = int(tokens[1])
-            if place_names_to_place.has_key(place_name):
-                place = place_names_to_place[place_name]
-                if hasattr(place, "relay"):
-                    place.relay.switch(want_on)
-                else:
-                    print("Requested relay switch for place without relay: {}".format(place_name))
-            else:
-                print("Couldn't find place: {}".format(place_name))
-            return True
-        print("Requested unknown command: {}".format(message))
-        return False
-
-    def process_input(self, message):
-        self.partial_message += message
-        while '$' in self.partial_message:
-            headTail = self.partial_message.split('$', 1)
-            one_message = headTail[0]
-            handled = self.process_message(one_message)
-            if not handled:
-                self.client.send("error,unknown_command,{}$".format(one_message))
-            self.partial_message = headTail[1]
-
-
-    def loop(self):
-        self.socket.listen(1)
-        c, addr = self.socket.accept()
-        print('Got connection from {}'.format(addr))
-        self.client = c
-        while True:
-            msg = c.recv(1024)
-            if msg == "":
-                print('Connection from {} closed'.format(addr))
-                break
-            self.process_input(msg)
 
 readingThread = ReadingThread()
 readingThread.start()
@@ -276,7 +236,22 @@ samplingThread.start()
 writeoutThread = WriteoutThread()
 writeoutThread.start()
 threads = [readingThread, samplingThread, writeoutThread]
+
+@route('/data', method = 'GET')
+def process():
+    values = {"temperature": temperature_sensor.toJSONRepresentable(), "heater": heater_pid.toJSONRepresentable(), "cooler": cooler_pid.toJSONRepresentable() }
+    return json.dumps(values)
+
+@route('/', method = 'GET')
+def process():
+    return static_file("index.html", root=SCRIPT_DIRECTORY)
+
+@route('/js/<path:path>')
+def callback(path):
+    return static_file(path, root="{}/{}".format(SCRIPT_DIRECTORY, "node_modules/dygraphs/dist/"))
+
 try:
+    run(host='localhost', port=8080, debug=True)
     while True:
         time.sleep(1)
         sys.stdout.flush()
