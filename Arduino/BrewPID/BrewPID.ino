@@ -253,7 +253,7 @@ private:
         bool internalOn = now > internalHeatingPeriod - internalHeatingDuration; /* Heat at the end of the period */
         if (!!isInternalHeatingOn != !!internalOn)
         {
-            Serial.println((internalOn ? "Switching internal heating on" : "Switching internal heating off"));
+            debugln((internalOn ? "Switching internal heating on" : "Switching internal heating off"));
         }
         isInternalHeatingOn = internalOn;
     }
@@ -422,6 +422,9 @@ public:
 };
 
 class PID {
+public:
+    bool isHeater;
+
 private:
     double kp;
     double ki;
@@ -445,17 +448,18 @@ private:
         }
         // Unit: degreeC / min
         double derivative = 60.0 * valueDelta / (double)timeDelta;
-        Serial.print("Returning derivative: ");
-        Serial.println(derivative);
+        debug("Returning derivative: ");
+        debugln(derivative);
     }
 
 public:
 
-    PID(double kp, double ki, double kd, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
+    PID(double kp, double ki, double kd, bool isHeater, long relayId, timestamp_t period = HEATING_COOLING_ADJUSTMENT_PERIOD_MS)
     {
         this->kp = kp;
         this->ki = ki;
         this->kd = kd;
+        this->isHeater = isHeater;
         this->period = period * 1000ULL;
         this->onTimestamp = 0;
         this->offTimestamp = 0;
@@ -487,14 +491,14 @@ public:
         timestamp_t duration = (timestamp_t)((double)period * output);
         onTimestamp = timestamp;
         offTimestamp = timestamp + duration;
-        Serial.print("Scheduled ");
-        Serial.print(relayId);
-        Serial.print(": ");
-        print_large(onTimestamp);
-        Serial.print(", off: ");
-        print_large(offTimestamp);
-        Serial.print(", output: ");
-        Serial.println(output);
+        debug("Scheduled ");
+        debug(relayId);
+        debug(": ");
+        debugll(onTimestamp);
+        debug(", off: ");
+        debugll(offTimestamp);
+        debug(", output: ");
+        debugln(output);
     }
 
     timestamp_t getOnTimestamp() {
@@ -841,7 +845,9 @@ void read_temperature_command_handler(struct command command)
 {
     temperature_t temperature = temperature_time_series->getLatestSmoothed();
     Serial.print("t,");
-    Serial.println(temperature);
+    Serial.print(temperature);
+    Serial.print(",");
+    Serial.println(target_temperature);
 }
 
 
@@ -867,12 +873,15 @@ void togle_heating_cooling_command_init(void *pidp)
 void togle_heating_cooling_command_handler(struct command command)
 {
     PID *pid = (PID *)command.data;
+    Serial.print("r,");
+    Serial.print(pid->isHeater ? "h," : "c,");
+    Serial.println(pid->shouldBeOn() ? "1" : "0");
     relay_switch_command_init(pid->getRelayId(), pid->shouldBeOn() ? 1 : 0);
 }
 
 /* -------- */
-PID *heaterPid = new PID(1.5, 0.0004, -5, HEATER_RELAY_ID);
-PID *coolerPid = new PID(1.0, 0.0003, -5, COOLER_RELAY_ID);
+PID *heaterPid = new PID(1.5, 0.0004, -5, true, HEATER_RELAY_ID);
+PID *coolerPid = new PID(1.0, 0.0003, -5, false, COOLER_RELAY_ID);
 
 bool heatingOn()
 {
@@ -917,10 +926,10 @@ void heating_cooling_command_handler(struct command command)
         return;
     }
     debugln("> Reevaluating heating/cooling");
-    Serial.print(temperature_time_series->getLatestSmoothed());
-    Serial.print(", ");
-    Serial.println(target_temperature);
-    print_utilisation();
+    debug(temperature_time_series->getLatestSmoothed());
+    debug(", ");
+    debugln(target_temperature);
+    //print_utilisation();
     if (!command.data)
     {
         reset_counter = 0;
@@ -1095,7 +1104,7 @@ void start_command_handler(struct command command)
     command_t power_up;
     command_t serial_input;
 
-    Serial.println("Start command");
+    debugln("Start command");
     power_up.type = POWER_UP_COMMAND;
     power_up.timestamp = NOW + 3 * 1000ULL * 1000ULL;
     push_command(power_up);
@@ -1126,7 +1135,7 @@ void setup() {
     command_t start_command;
 
     Serial.begin(BAUD_RATE);
-    Serial.print("setup");
+    debug("setup");
     /* Reset the queue and initiate operation by queueing the start command. */
     reset_queue();
     start_command.type = START_COMMAND;

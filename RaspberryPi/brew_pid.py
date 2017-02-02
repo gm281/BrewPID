@@ -8,12 +8,10 @@ import sys
 import socket
 
 SERVER_PORT=12400
-DEVICE = '/dev/ttyACM0' # the arduino serial interface (use dmesg when connecting)
+DEVICE = '/dev/cu.usbmodem1411' # the arduino serial interface (use dmesg when connecting)
 BAUD = 9600
 NR_SENSORS = 6
-SENSOR_LOG_DIRECTORY = os.getenv("HOME") + '/SensorLogs/'
-BATHROOM_MAX_HUMIDITY = 85
-BATHROOM_HYSTERESIS = 1
+LOG_DIRECTORY = os.getenv("HOME") + '/TemperatureLogs/'
 
 # In order to use debug mode, set the below variable to True, then in the shell:
 # mkfifo /tmp/cmd_fifo
@@ -52,92 +50,82 @@ def mkdir_p(path):
             pass
         else: raise
 
-class Place:
-    def __init__(self, name, sensor_id, relay_id):
-        self.name = name
-        self.sensor_id = sensor_id
-        self.relay_id = relay_id
-
-bathroom = Place("Bathroom", 3, 2)
-outside = Place("Outside", 1, -1)
-hall = Place("Hall", 5, 0)
-jasiu = Place("Jasiu", 2, 5)
-study = Place("Study", 0, 4)
-bedroom = Place("Bedroom", 4, 3)
-places = [bathroom, outside, hall, jasiu, study, bedroom]
-place_names_to_place = {}
-for place in places:
-    place_names_to_place[place.name] = place
-
 def same_hour(datetime1, datetime2):
-    return (datetime1.year == datetime2.year) and (datetime1.month == datetime2.month) and (datetime1.day == datetime2.day) and (datetime1.hour == datetime2.hour)
+    return (datetime1.year == datetime2.year) and (datetime1.month == datetime2.month) and (datetime1.day == datetime2.day) and (datetime1.hour == datetime2.hour) and (datetime1.minute == datetime2.minute)
 
-class SensorReading:
-    def __init__(self, date, humidity, temp):
-        self.date = date
-        self.humidity = humidity
-        self.temperature = temp
-
-    def __repr__(self):
-        return "{}, {}, {}".format(self.date, self.humidity, self.temperature)
-
-class Sensor:
-    def __init__(self, place):
-        self.place = place
-        self.sensor_id = place.sensor_id
+class Loggable:
+    def __init__(self, name):
+        self.name = name
         self.current_hour = []
         self.complete_hours = []
         self.last_reading = None
         self.lock = threading.Lock()
 
-    def consume_complete_hours(self):
+    def get_name(self):
+        return self.name
+
+    def locked_flush_hour(self, date):
+        if self.last_reading != None and not same_hour(self.last_reading.date, date):
+            self.complete_hours.append(self.current_hour)
+            self.current_hour = []
+
+    def consume_complete_hours(self, date):
         self.lock.acquire()
+        self.locked_flush_hour(date)
         complete_hours = self.complete_hours
         self.complete_hours = []
         self.lock.release()
         return complete_hours
 
-    def flush_hour(self):
-        self.lock.acquire()
-        self.complete_hours.append(self.current_hour)
-        self.lock.release()
-        self.current_hour = []
 
-    def get_last_reading(self):
-        self.lock.acquire()
-        last_reading = self.last_reading
-        self.lock.release()
-        return last_reading
+class TemperatureReading:
+    def __init__(self, date, temp, target_temp):
+        self.date = date
+        self.temperature = temp
+        self.target_temperature = target_temp
 
-    def process_reading(self, humidity, temp):
-        sensor_reading = SensorReading(datetime.datetime.now(), humidity, temp)
-        if self.last_reading != None and not same_hour(self.last_reading.date, sensor_reading.date):
-            self.flush_hour()
+    def __repr__(self):
+        return "{}, {}, {}".format(self.date, self.temperature, self.target_temperature)
+
+class TemperatureSensor(Loggable):
+    def __init__(self):
+        Loggable.__init__(self, "temperature")
+
+    def process_reading(self, temp, target_temp):
+        sensor_reading = TemperatureReading(datetime.datetime.now(), temp, target_temp)
         self.lock.acquire()
+        self.locked_flush_hour(sensor_reading.date)
         self.current_hour.append(sensor_reading)
         self.last_reading = sensor_reading
         self.lock.release()
 
     def request_reading(self):
-        writeCommand("s{0}$".format(self.sensor_id))
+        writeCommand("t$")
 
-class Relay:
-    def __init__(self, place):
-        self.place = place
-        self.relay_id = place.relay_id
+class HeaterCoolerSwitch:
+    def __init__(self, date, on):
+        self.date = date
+        self.on = on
 
-    def switch(self, on):
-        writeCommand("r{0},{1}$".format(self.relay_id, int(on)))
+    def __repr__(self):
+        return "{}, {}".format(self.date, self.on)
 
-id_to_sensor = {}
-for place in places:
-    if place.sensor_id >= 0:
-        sensor = Sensor(place)
-        id_to_sensor[place.sensor_id] = sensor
-        place.sensor = sensor
-    if place.relay_id >= 0:
-        place.relay = Relay(place)
+class PID(Loggable):
+    def __init__(self, heater):
+        Loggable.__init__(self, heater)
 
+    def process_reading(self, on):
+        reading = HeaterCoolerSwitch(datetime.datetime.now(), on)
+        self.lock.acquire()
+        self.locked_flush_hour(reading.date)
+        self.current_hour.append(reading)
+        self.last_reading = reading
+        self.lock.release()
+
+
+temperature_sensor = TemperatureSensor()
+heater_pid = PID("heater")
+cooler_pid = PID("cooler")
 
 class StoppableThread(threading.Thread):
     def __init__(self):
@@ -159,24 +147,23 @@ class ReadingThread(StoppableThread):
         super(ReadingThread, self).__init__()
         self.line = ""
 
-    def process_sensor_reading(self, sensor_id, humidity, temperature):
-        global is_on
-        sensor = id_to_sensor[sensor_id]
-        if sensor is None:
-            print('Warning: unknown sensor_id {0}, reading {}, {}'.format(sensor_id, humidity, temperature))
-            return
-        sensor.process_reading(humidity, temperature)
-
     def loop(self):
         # FOR TEST: read(1) guarantees no buffering
         self.line += serial_read_fd.read(1)
         while '\n' in self.line:
             headTail = self.line.split('\n', 1)
             line = headTail[0]
-            if line.startswith("s,"):
+            if line.startswith("t,"):
                 tokens = line.split(',')
-                if tokens[2] == "OK":
-                    self.process_sensor_reading(int(tokens[1]), float(tokens[3]), float(tokens[4]))
+                temperature_sensor.process_reading(float(tokens[1]), float(tokens[2]))
+            elif line.startswith("r,"):
+                tokens = line.split(',')
+                if tokens[1] == "h":
+                    heater_pid.process_reading(tokens[2])
+                elif tokens[1] == "c":
+                    cooler_pid.process_reading(tokens[2])
+                else:
+                    print("Unknown relay type: {0}".format(tokens[1]))
             else:
                 print("Unknown message: {0}".format(line))
             self.line = headTail[1]
@@ -187,70 +174,36 @@ class SamplingThread(StoppableThread):
 
     def loop(self):
         time.sleep(3)
-        for place in places:
-            if hasattr(place, "sensor"):
-                place.sensor.request_reading()
-                time.sleep(0.1)
+        temperature_sensor.request_reading()
+
 
 class WriteoutThread(StoppableThread):
     def __init__(self):
         super(WriteoutThread, self).__init__()
 
-    def writeout_hour(self, place, hour):
+    def writeout_hour(self, name, hour):
         if len(hour) == 0:
             return
         date = hour[0].date
-        hour_dir = "{0}/{1}/{2:0>4}/{3:0>2}/{4:0>2}/{5:0>2}".format(SENSOR_LOG_DIRECTORY, place.name, date.year, date.month, date.day, date.hour)
+        hour_dir = "{0}/{1}/{2:0>4}/{3:0>2}/{4:0>2}/{5:0>2}".format(LOG_DIRECTORY, name, date.year, date.month, date.day, date.hour)
         mkdir_p(hour_dir)
-        out_file = open(hour_dir+"/sensor.log", "w")
+        out_file = open(hour_dir+"/log", "w")
         for reading in hour:
             out_file.write("{}\n".format(str(reading)))
         out_file.close()
 
     def loop(self):
         time.sleep(1)
-        for place in places:
-            if hasattr(place, "sensor"):
-                sensor = place.sensor
-                complete_hours = sensor.consume_complete_hours()
-                for complete_hour in complete_hours:
-                    self.writeout_hour(sensor.place, complete_hour)
 
-class VentilationThread(StoppableThread):
-    def __init__(self):
-        super(VentilationThread, self).__init__()
-        self.is_on = False
-        self.bathroom_sensor = bathroom.sensor
-        self.bathroom_relay = bathroom.relay
-        self.bathroom_relay.switch(self.is_on)
-        self.bedroom_relay = bedroom.relay
-        self.last_time = datetime.datetime.now()
+        date = datetime.datetime.now()
+        loggables = [temperature_sensor, heater_pid, cooler_pid]
+        for loggable in loggables:
+            print(loggable)
+            complete_hours = loggable.consume_complete_hours(date)
+            for complete_hour in complete_hours:
+                name = loggable.get_name()
+                self.writeout_hour(name, complete_hour)
 
-    def want_bedroom_on(self, time):
-        minutes = time.minute
-        return (minutes >= 5) and (minutes < 10)
-
-    def loop(self):
-        time.sleep(1)
-        last_reading = self.bathroom_sensor.last_reading
-        if last_reading != None:
-            want_on = last_reading.humidity > BATHROOM_MAX_HUMIDITY + BATHROOM_HYSTERESIS
-            want_off = last_reading.humidity <= BATHROOM_MAX_HUMIDITY - BATHROOM_HYSTERESIS
-            if (want_on and not self.is_on) or (want_off and self.is_on):
-                switching_on = want_on
-                print("Date: {0}, switching on: {1}, due to reading: {2}".format(datetime.datetime.now(), int(switching_on), str(last_reading)))
-                self.bathroom_relay.switch(switching_on)
-                self.is_on = switching_on
-        current_time = datetime.datetime.now()
-        want_bedroom_on = self.want_bedroom_on(current_time)
-        wanted_bedroom_on = self.want_bedroom_on(self.last_time)
-        if want_bedroom_on and not wanted_bedroom_on:
-            print("Switching bedroom on");
-            self.bedroom_relay.switch(True)
-        if not want_bedroom_on and wanted_bedroom_on:
-            print("Switching bedroom off");
-            self.bedroom_relay.switch(False)
-        self.last_time = current_time
 
 class ServerThread(StoppableThread):
     def __init__(self):
@@ -322,11 +275,7 @@ samplingThread = SamplingThread()
 samplingThread.start()
 writeoutThread = WriteoutThread()
 writeoutThread.start()
-ventilationThread = VentilationThread()
-ventilationThread.start()
-serverThread = ServerThread()
-serverThread.start()
-threads = [readingThread, samplingThread, writeoutThread, ventilationThread, serverThread]
+threads = [readingThread, samplingThread, writeoutThread]
 try:
     while True:
         time.sleep(1)
