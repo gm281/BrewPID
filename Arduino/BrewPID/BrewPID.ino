@@ -991,6 +991,7 @@ void heating_cooling_set_target_temperature(double/*temperature_t*/ target_t)
         debugln("> Ignoring attempt to reset heating/cooling loop");
         return;
     }
+    read_temperature_command_init();
     heating_cooling_command_init(1, 0);
 }
 

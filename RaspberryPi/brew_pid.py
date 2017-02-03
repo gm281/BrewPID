@@ -125,6 +125,19 @@ class TemperatureSensor(Loggable):
     def request_reading(self):
         writeCommand("t$")
 
+    def set_target_temperature(self, target_temperature):
+        new_temp=int(target_temperature * 100)
+        writeCommand("s{}$".format(new_temp))
+
+    def get_target_temperature(self):
+        self.lock.acquire()
+        if self.last_reading != None:
+            temp = self.last_reading.target_temperature
+        else:
+            temp = -1.0
+        self.lock.release()
+        return temp
+
 class HeaterCoolerSwitch:
     def __init__(self, date, on):
         self.date = date
@@ -241,6 +254,20 @@ threads = [readingThread, samplingThread, writeoutThread]
 def process():
     values = {"temperature": temperature_sensor.toJSONRepresentable(), "heater": heater_pid.toJSONRepresentable(), "cooler": cooler_pid.toJSONRepresentable() }
     return json.dumps(values)
+
+@route('/temp_adj/<direction>', method = 'GET')
+def temp_adj(direction):
+    current_target_temperature = temperature_sensor.get_target_temperature()
+    if current_target_temperature < 0:
+        return 'unknown_target_temperature'
+    if direction == 'up':
+        current_target_temperature = current_target_temperature + 0.1
+    elif direction == 'down':
+        current_target_temperature = current_target_temperature - 0.1
+    else:
+        return 'Unknown temp adj direction: {}'.format(direction)
+    temperature_sensor.set_target_temperature(current_target_temperature)
+    return ''
 
 @route('/', method = 'GET')
 def process():

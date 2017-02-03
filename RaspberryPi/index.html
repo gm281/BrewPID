@@ -11,6 +11,9 @@
     <div class="col-lg-8">
       <div id="demodiv"></div>
     </div>
+    <input type="button" id="temp_up" value="+" />
+    <input type="button" id="temp_down" value="-" />
+
     <script type="text/javascript">
         $.getJSON("data", function(raw_data) {
             var data = []
@@ -28,6 +31,19 @@
                 animatedZooms: true
             });
         });
+
+        var temp_adj = function(dir) {
+            $.get("temp_adj/"+dir);
+        };
+
+        $('#temp_up').click(function() {
+            temp_adj('up');
+        });
+        $('#temp_down').click(function() {
+            temp_adj('down');
+        });
+    </script>
+
     </script>
   <body>
 </html>
