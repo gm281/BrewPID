@@ -166,6 +166,9 @@ temperature_sensor = TemperatureSensor()
 heater_pid = PID("heater")
 cooler_pid = PID("cooler")
 
+def str2bool(v):
+    return v.strip().lower() in ("yes", "true", "t", "1")
+
 class StoppableThread(threading.Thread):
     def __init__(self):
         super(StoppableThread, self).__init__()
@@ -198,9 +201,9 @@ class ReadingThread(StoppableThread):
             elif line.startswith("r,"):
                 tokens = line.split(',')
                 if tokens[1] == "h":
-                    heater_pid.process_reading(bool(tokens[2]))
+                    heater_pid.process_reading(str2bool(tokens[2]))
                 elif tokens[1] == "c":
-                    cooler_pid.process_reading(bool(tokens[2]))
+                    cooler_pid.process_reading(str2bool(tokens[2]))
                 else:
                     print("Unknown relay type: {0}".format(tokens[1]))
             else:

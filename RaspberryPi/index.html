@@ -9,12 +9,13 @@
 
   <body>
     <div class="col-lg-8">
-      <div id="demodiv"></div>
+      <div id="graphdiv" style="width:90%; height:90%;">
     </div>
     <input type="button" id="temp_up" value="+" />
     <input type="button" id="temp_down" value="-" />
 
     <script type="text/javascript">
+        var global_data
         var get_data = function(handler) {
             $.getJSON("data", function(raw_data) {
                 var data = []
@@ -24,17 +25,51 @@
                     var date = new Date(one.date);
                     data.push([date, one.temp, one.target_temp]);
                 }
+                global_data = raw_data
                 handler(data);
             });
         };
 
         var g
+        var plot_bands = function(graph, source, canvas, area, style) {
+            var len = source.length;
+            var wantOn = true;
+            var periodBegin
+            for (var i=0; i<len; i++) {
+                var one = source[i];
+                if (one["on"] == wantOn) {
+                    if (wantOn) {
+                        periodBegin = one;
+                    } else {
+                        periodEnd = one;
+                        var left = graph.toDomXCoord(new Date(periodBegin.date));
+                        var right = graph.toDomXCoord(new Date(periodEnd.date));
+
+                        canvas.fillStyle = style;
+                        canvas.fillRect(left, area.y, right - left, area.h);
+                    }
+                    wantOn = !wantOn
+                }
+            }
+            if (!wantOn) {
+                var left = graph.toDomXCoord(new Date(periodBegin.date));
+                var right = graph.toDomXCoord(graph.xAxisRange()[1]);
+
+                canvas.fillStyle = style;
+                canvas.fillRect(left, area.y, right - left, area.h);
+            }
+        };
+
         get_data(function(data) {
             g = new Dygraph(
-                document.getElementById("demodiv"),
+                document.getElementById("graphdiv"),
                 data,
                 {
                     labels: ['Time', 'Temp', 'Target'],
+                    underlayCallback: function(canvas, area, g) {
+                        plot_bands(g, global_data.cooler, canvas, area, "rgba(100, 100, 255, 0.25)");
+                        plot_bands(g, global_data.heater, canvas, area, "rgba(255, 100, 100, 0.25)");
+                    },
                     animatedZooms: true
                 });
         });
