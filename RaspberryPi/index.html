@@ -15,22 +15,35 @@
     <input type="button" id="temp_down" value="-" />
 
     <script type="text/javascript">
-        $.getJSON("data", function(raw_data) {
-            var data = []
-            var len = raw_data.temperature.length;
-            for (var i = 0; i < len; i++) {
-                var one = raw_data.temperature[i];
-                var date = new Date(one.date);
-                data.push([date, one.temp, one.target_temp]);
-            }
-            g = new Dygraph(
-            document.getElementById("demodiv"),
-            data,
-            {
-                labels: ['Time', 'Temp', 'Target'],
-                animatedZooms: true
+        var get_data = function(handler) {
+            $.getJSON("data", function(raw_data) {
+                var data = []
+                var len = raw_data.temperature.length;
+                for (var i = 0; i < len; i++) {
+                    var one = raw_data.temperature[i];
+                    var date = new Date(one.date);
+                    data.push([date, one.temp, one.target_temp]);
+                }
+                handler(data);
             });
+        };
+
+        var g
+        get_data(function(data) {
+            g = new Dygraph(
+                document.getElementById("demodiv"),
+                data,
+                {
+                    labels: ['Time', 'Temp', 'Target'],
+                    animatedZooms: true
+                });
         });
+
+        setInterval(function() {
+            get_data(function(data) {
+                g.updateOptions( { 'file': data } );
+            });
+        }, 1000);
 
         var temp_adj = function(dir) {
             $.get("temp_adj/"+dir);
@@ -39,9 +52,11 @@
         $('#temp_up').click(function() {
             temp_adj('up');
         });
+
         $('#temp_down').click(function() {
             temp_adj('down');
         });
+
     </script>
 
     </script>
