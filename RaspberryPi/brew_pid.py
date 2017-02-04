@@ -55,7 +55,24 @@ def mkdir_p(path):
         else: raise
 
 def same_hour(datetime1, datetime2):
-    return (datetime1.year == datetime2.year) and (datetime1.month == datetime2.month) and (datetime1.day == datetime2.day) and (datetime1.hour == datetime2.hour) and (datetime1.minute == datetime2.minute)
+    return (datetime1.year == datetime2.year) and (datetime1.month == datetime2.month) and (datetime1.day == datetime2.day) and (datetime1.hour == datetime2.hour)
+
+def smaller_hour(datetime1, datetime2):
+    if datetime1.year < datetime2.year:
+        return True
+    if datetime1.year > datetime2.year:
+        return False
+    if datetime1.month < datetime2.month:
+        return True
+    if datetime1.month > datetime2.month:
+        return False
+    if datetime1.day < datetime2.day:
+        return True
+    if datetime1.day > datetime2.day:
+        return False
+    if datetime1.hour < datetime2.hour:
+        return True
+    return False
 
 class Loggable:
     def __init__(self, name):
@@ -83,17 +100,26 @@ class Loggable:
         self.lock.release()
         return complete_hours
 
-    def toJSONRepresentable(self):
+    def toJSONRepresentable(self, cutoff_date):
+        if cutoff_date == None:
+            cutoff_date = datetime.datetime.min
         out = []
         self.lock.acquire()
         for hour in self.consumed_hours:
             for i in hour:
-                out.append(i.toJSONRepresentable())
+                if smaller_hour(i.date, cutoff_date):
+                    break
+                if cutoff_date < i.date:
+                    out.append(i.toJSONRepresentable())
         for hour in self.complete_hours:
             for i in hour:
-                out.append(i.toJSONRepresentable())
+                if smaller_hour(i.date, cutoff_date):
+                    break
+                if cutoff_date < i.date:
+                    out.append(i.toJSONRepresentable())
         for i in self.current_hour:
-            out.append(i.toJSONRepresentable())
+            if cutoff_date < i.date:
+                out.append(i.toJSONRepresentable())
         self.lock.release()
         return out
 
@@ -253,9 +279,22 @@ writeoutThread = WriteoutThread()
 writeoutThread.start()
 threads = [readingThread, samplingThread, writeoutThread]
 
+def parse_date(in_str):
+    if in_str == "none":
+        return None
+    # TODO: figure out how to include microseconds
+    date=in_str.split('.')[0]
+    return datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%S')
+
 @route('/data', method = 'GET')
 def process():
-    values = {"temperature": temperature_sensor.toJSONRepresentable(), "heater": heater_pid.toJSONRepresentable(), "cooler": cooler_pid.toJSONRepresentable() }
+    last_temp_date = parse_date(request.query['last_temp_date'])
+    last_heater_date = parse_date(request.query['last_heater_date'])
+    last_cooler_date = parse_date(request.query['last_cooler_date'])
+    temps = temperature_sensor.toJSONRepresentable(last_temp_date)
+    heats = heater_pid.toJSONRepresentable(last_heater_date)
+    cools = cooler_pid.toJSONRepresentable(last_cooler_date)
+    values = {"temperature": temps, "heater": heats, "cooler": cools }
     return json.dumps(values)
 
 @route('/temp_adj/<direction>', method = 'GET')
@@ -279,6 +318,11 @@ def process():
 @route('/js/<path:path>')
 def callback(path):
     return static_file(path, root="{}/{}".format(SCRIPT_DIRECTORY, "node_modules/dygraphs/dist/"))
+
+@route('/jquery.js')
+def jq():
+    return static_file('jquery.min.js', root=SCRIPT_DIRECTORY)
+
 
 try:
     run(host='localhost', port=8080, debug=True)

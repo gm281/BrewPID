@@ -2,7 +2,7 @@
   <head>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+    <script src="jquery.js"></script>
     <link rel="stylesheet" href="js/dygraph.css">
     <script type="text/javascript" src="js/dygraph.min.js"></script>
   </head>
@@ -16,18 +16,44 @@
 
     <script type="text/javascript">
         var global_data
+        var get_temperature_data = function() {
+            var data = []
+            var len = global_data.temperature.length;
+            for (var i = 0; i < len; i++) {
+                var one = global_data.temperature[i];
+                var date = new Date(one.date);
+                data.push([date, one.temp, one.target_temp]);
+            }
+            return data;
+        }
+
+        var get_last_date = function(type) {
+            if (!global_data) {
+                return "none";
+            }
+            var arr = global_data[type];
+            if (arr.length == 0) {
+                return "none";
+            }
+            return arr[arr.length-1].date;
+        }
         var get_data = function(handler) {
-            $.getJSON("data", function(raw_data) {
-                var data = []
-                var len = raw_data.temperature.length;
-                for (var i = 0; i < len; i++) {
-                    var one = raw_data.temperature[i];
-                    var date = new Date(one.date);
-                    data.push([date, one.temp, one.target_temp]);
-                }
-                global_data = raw_data
-                handler(data);
-            });
+            $.getJSON("data",
+                {
+                    last_temp_date: get_last_date("temperature"),
+                    last_cooler_date: get_last_date("cooler"),
+                    last_heater_date: get_last_date("heater")
+                },
+                function(raw_data) {
+                    if (!global_data) {
+                        global_data = raw_data;
+                    } else {
+                        global_data.temperature = global_data.temperature.concat(raw_data.temperature);
+                        global_data.cooler = global_data.cooler.concat(raw_data.cooler);
+                        global_data.heater = global_data.heater.concat(raw_data.heater);
+                    }
+                    handler();
+                });
         };
 
         var g
@@ -60,23 +86,24 @@
             }
         };
 
-        get_data(function(data) {
+        get_data(function() {
             g = new Dygraph(
                 document.getElementById("graphdiv"),
-                data,
+                get_temperature_data(),
                 {
                     labels: ['Time', 'Temp', 'Target'],
                     underlayCallback: function(canvas, area, g) {
                         plot_bands(g, global_data.cooler, canvas, area, "rgba(100, 100, 255, 0.25)");
                         plot_bands(g, global_data.heater, canvas, area, "rgba(255, 100, 100, 0.25)");
                     },
-                    animatedZooms: true
+                    animatedZooms: true/*,
+                    showRangeSelector: true*/
                 });
         });
 
         setInterval(function() {
-            get_data(function(data) {
-                g.updateOptions( { 'file': data } );
+            get_data(function() {
+                g.updateOptions( { 'file': get_temperature_data() } );
             });
         }, 1000);
 
