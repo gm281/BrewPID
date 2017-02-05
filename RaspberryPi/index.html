@@ -99,13 +99,14 @@
                     animatedZooms: true/*,
                     showRangeSelector: true*/
                 });
+	        var repaint = function() {
+                get_data(function() {
+                    g.updateOptions( { 'file': get_temperature_data() } );
+                });
+		setTimeout(repaint, 10000);
+            };
+            setTimeout(repaint, 10000);
         });
-
-        setInterval(function() {
-            get_data(function() {
-                g.updateOptions( { 'file': get_temperature_data() } );
-            });
-        }, 1000);
 
         var temp_adj = function(dir) {
             $.get("temp_adj/"+dir);
