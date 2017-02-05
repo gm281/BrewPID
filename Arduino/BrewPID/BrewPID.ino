@@ -5,7 +5,7 @@
 /* CONFIG */
 /***********************************************************************************************/
 
-#define TIME_SPEEDUP_FACTOR                  500 // Used for tests: speeds up flow of time by this factor
+#define TIME_SPEEDUP_FACTOR                  1 // Used for tests: speeds up flow of time by this factor
 
 #define BAUD_RATE   (9600ULL)
 #define ONE_WIRE_BUS A3
@@ -13,8 +13,8 @@
 #define TEMPERATURE_HISTORY_SIZE              10
 #define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000ULL)
 #define DEFAULT_TARGET_TEMPERATURE            21.0
-#define HEATER_RELAY_ID                       0
-#define COOLER_RELAY_ID                       1
+#define HEATER_RELAY_ID                       10
+#define COOLER_RELAY_ID                       16
 
 /***********************************************************************************************/
 /* BASIC UTILS */
@@ -199,16 +199,12 @@ public:
 class DallasTemperatureSensor final : public TemperatureSensor
 {
 private:
-    // TODO does this free() those on object deallocation?
-    // What's best, storting by pointer?
-    OneWire &oneWire;
-    DallasTemperature &rawSensors;
+    OneWire oneWire;
+    DallasTemperature rawSensors;
 
 public:
-    DallasTemperatureSensor(int bus)
+    DallasTemperatureSensor(int bus): oneWire(bus), rawSensors(&oneWire)
     {
-        oneWire = OneWire(bus);
-        rawSensors = DallasTemperature(&oneWire);
         rawSensors.begin();
     }
 
@@ -217,7 +213,9 @@ public:
         // Send the command to get temperatures
         rawSensors.requestTemperatures();
         // You can have more than one IC on the same bus. 0 refers to the first IC on the wire
-        return rawSensors.getTempCByIndex(0);
+        double temp = rawSensors.getTempCByIndex(0);
+        //Serial.println(temp);
+        return temp;
     }
 };
 
@@ -822,8 +820,8 @@ void sample_temperature_command_handler(struct command command)
 void sample_temperature_power_up()
 {
     debugln("sample_temperature_power_up");
-    //temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
-    temperature_sensor = new TestTemperatureSensor();
+    temperature_sensor = new DallasTemperatureSensor(ONE_WIRE_BUS);
+    //temperature_sensor = new TestTemperatureSensor();
     temperature_time_series = new TimeSeries(TEMPERATURE_HISTORY_SIZE, 1 /* degreeC */ * 5 /* Up to 5x the period will be accounted */ * HEATING_COOLING_ADJUSTMENT_PERIOD_MS * 1000ULL /* us */ , target_temperature);
     // Kick off endless chain of temperature samplings
     sample_temperature_command_init();

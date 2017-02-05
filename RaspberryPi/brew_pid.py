@@ -12,7 +12,6 @@ import json
 SERVER_PORT=12400
 DEVICE = '/dev/cu.usbmodem1411' # the arduino serial interface (use dmesg when connecting)
 BAUD = 9600
-NR_SENSORS = 6
 LOG_DIRECTORY = os.getenv("HOME") + '/TemperatureLogs/'
 SCRIPT_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
 
@@ -325,7 +324,7 @@ def jq():
 
 
 try:
-    run(host='localhost', port=8080, debug=True)
+    run(host='0.0.0.0', port=SERVER_PORT, debug=True)
     while True:
         time.sleep(1)
         sys.stdout.flush()
