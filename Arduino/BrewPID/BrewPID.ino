@@ -13,8 +13,8 @@
 #define TEMPERATURE_HISTORY_SIZE              10
 #define HEATING_COOLING_ADJUSTMENT_PERIOD_MS  (10 * 60 * 1000ULL)
 #define DEFAULT_TARGET_TEMPERATURE            21.0
-#define HEATER_RELAY_ID                       10
-#define COOLER_RELAY_ID                       16
+#define HEATER_RELAY_ID                       0 /* Note these are not pin ids, see 'relay_pins' */
+#define COOLER_RELAY_ID                       1
 
 /***********************************************************************************************/
 /* BASIC UTILS */
@@ -742,7 +742,7 @@ struct relay_desired_state {
     int on;
 };
 struct relay_desired_state relays[NR_RELAYS];
-long relay_pins[NR_RELAYS] = {2, 3, 4, 5, 6, 7};
+long relay_pins[NR_RELAYS] = {10, 16, 14, 15, 18, 19};
 bool relay_on_high[NR_RELAYS] = {0, 0, 0, 0, 0, 0};
 
 void relay_switch_power_up() {
