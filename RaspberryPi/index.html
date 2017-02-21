@@ -15,6 +15,12 @@
     <input type="button" id="temp_down" value="-" />
 
     <script type="text/javascript">
+        var yesterdayISO 
+        {
+            var yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            yesterdayISO = yesterday.toISOString();
+        }
         var global_data
         var get_temperature_data = function() {
             var data = []
@@ -29,11 +35,11 @@
 
         var get_last_date = function(type) {
             if (!global_data) {
-                return "none";
+                return yesterdayISO;
             }
             var arr = global_data[type];
             if (arr.length == 0) {
-                return "none";
+                return yesterdayISO;
             }
             return arr[arr.length-1].date;
         }

@@ -281,7 +281,7 @@ threads = [readingThread, samplingThread, writeoutThread]
 def parse_date(in_str):
     if in_str == "none":
         return None
-    # TODO: figure out how to include microseconds
+    # Ignore sub-second portion 
     date=in_str.split('.')[0]
     return datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%S')
 
