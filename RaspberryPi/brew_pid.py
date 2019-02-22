@@ -73,6 +73,29 @@ def smaller_hour(datetime1, datetime2):
         return True
     return False
 
+last_temperature_change_time = datetime.datetime.now()
+temparature_change_accelerator_counter = 0
+def temperature_delta():
+    global last_temperature_change_time
+    global temparature_change_accelerator_counter
+
+    small_delta = 0.1
+    accelerated_delta = 1.0
+
+    time_now = datetime.datetime.now()
+    time_delta = (time_now - last_temperature_change_time).total_seconds()
+    last_temperature_change_time = time_now
+
+    if time_delta < 5:
+        temparature_change_accelerator_counter = temparature_change_accelerator_counter + 1
+    else:
+        temparature_change_accelerator_counter = 0
+
+    if temparature_change_accelerator_counter > 2:
+        return accelerated_delta
+    else:
+        return small_delta
+
 class Loggable:
     def __init__(self, name):
         self.name = name
@@ -302,9 +325,9 @@ def temp_adj(direction):
     if current_target_temperature < 0:
         return 'unknown_target_temperature'
     if direction == 'up':
-        current_target_temperature = current_target_temperature + 0.1
+        current_target_temperature = current_target_temperature + temperature_delta()
     elif direction == 'down':
-        current_target_temperature = current_target_temperature - 0.1
+        current_target_temperature = current_target_temperature - temperature_delta()
     else:
         return 'Unknown temp adj direction: {}'.format(direction)
     temperature_sensor.set_target_temperature(current_target_temperature)
